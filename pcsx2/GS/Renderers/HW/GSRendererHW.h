@@ -1,0 +1,780 @@
+// SPDX-FileCopyrightText: 2002-2026 PCSX2 Dev Team
+// SPDX-License-Identifier: GPL-3.0+
+
+#pragma once
+
+#include "GSTextureCache.h"
+#include "GS/Renderers/HW/GSBurstMemo.h"
+#include "GS/Renderers/HW/GSDrawAlphaMask.h"
+#include "GS/Renderers/HW/GSDrawRow.h"
+#include "GS/Renderers/Common/GSBlendCarry.h"
+#include "GS/Renderers/Common/GSFunctionMap.h"
+#include "GS/Renderers/Common/GSNativeTexelGridPolicy.h"
+#include "GS/Renderers/Common/GSRenderer.h"
+#include "GS/Renderers/Common/GSSwPrimRender.h"
+#include "GS/Renderers/SW/GSTextureCacheSW.h"
+#include "GS/GSState.h"
+#include "GS/MultiISA.h"
+
+class GSRendererHW;
+MULTI_ISA_DEF(class GSRendererHWFunctions;)
+MULTI_ISA_DEF(void GSRendererHWPopulateFunctions(GSRendererHW& renderer);)
+
+class GSHwHack;
+
+enum ClearType
+{
+	NotClear,
+	NormalClear,
+	ClearWithDraw
+};
+
+class GSRendererHW : public GSRenderer
+{
+	MULTI_ISA_FRIEND(GSRendererHWFunctions);
+	friend GSHwHack;
+
+public:
+	static constexpr int MAX_FRAMEBUFFER_HEIGHT = 1280;
+
+private:
+	// Frontend acceptance of the final color dispatch, not GPU completion.
+	bool m_draw_color_dispatch_accepted = false;
+	bool UseSelectedColorInvalidation(const GSTextureCache::Target* rt, const GSVector4i& rect, bool skip_draw) const;
+
+	static constexpr float SSR_UV_TOLERANCE = 1.0f;
+
+	using GSC_Ptr = bool(*)(GSRendererHW& r, int& skip);	// GSC - Get Skip Count
+	using OI_Ptr = bool(*)(GSRendererHW& r, GSTexture* rt, GSTexture* ds, GSTextureCache::Source* t); // OI - Before draw
+	using MV_Ptr = bool(*)(GSRendererHW& r); // MV - Move
+
+	// We modify some of the context registers to optimize away unnecessary operations.
+	// Instead of messing with the real context, we copy them and use those instead.
+	struct HWCachedCtx
+	{
+		GIFRegTEX0 TEX0;
+		GIFRegTEXA TEXA;
+		GIFRegCLAMP CLAMP;
+		GIFRegTEST TEST;
+		GIFRegFRAME FRAME;
+		GIFRegZBUF ZBUF;
+
+		__ri bool DepthRead() const { return TEST.ZTE && (TEST.ZTST == ZTST_GEQUAL || TEST.ZTST == ZTST_GREATER); }
+
+		__ri bool DepthWrite() const
+		{
+			// Alpha test, all pixels fail, z buffer is not updated.
+			if (TEST.ATE && TEST.ATST == ATST_NEVER && TEST.AFAIL != AFAIL_ZB_ONLY)
+			{
+				return false;
+			}
+
+			// Depth test enabled, all pixels fail.
+			if (TEST.ZTE && TEST.ZTST == ZTST_NEVER)
+			{
+				return false;
+			}
+
+			return ZBUF.ZMSK == 0 && TEST.ZTE != 0; // ZTE == 0 is bug on the real hardware, write is blocked then
+		}
+	};
+
+	// Require special argument
+	bool OI_BlitFMV(GSTextureCache::Target* _rt, GSTextureCache::Source* t, const GSVector4i& r_draw);
+	bool TryGSMemClear(bool no_rt, bool preserve_rt, bool invalidate_rt, u32 rt_end_bp, bool no_ds,
+		bool preserve_z, bool invalidate_z, u32 ds_end_bp);
+	void ClearGSLocalMemory(const GSOffset& off, const GSVector4i& r, u32 vert_color);
+	bool DetectDoubleHalfClear(bool& no_rt, bool& no_ds);
+	bool DetectStripedDoubleClear(bool& no_rt, bool& no_ds);
+	bool DetectRedundantBufferClear(bool& no_rt, bool& no_ds, u32 fm_mask);
+	bool TryTargetClear(GSTextureCache::Target* rt, GSTextureCache::Target* ds, bool preserve_rt_color, bool preserve_depth);
+	void SetNewFRAME(u32 bp, u32 bw, u32 psm);
+	void SetNewZBUF(u32 bp, u32 psm);
+
+	u16 Interpolate_UV(float alpha, int t0, int t1);
+	float alpha0(int L, int X0, int X1);
+	float alpha1(int L, int X0, int X1);
+	void SwSpriteRender();
+	bool CanUseSwSpriteRender();
+	int IsScalingDraw(GSTextureCache::Source* src, bool no_gaps);
+	ClearType IsConstantDirectWriteMemClear();
+	u32 GetConstantDirectWriteMemClearColor() const;
+	u32 GetConstantDirectWriteMemClearDepth() const;
+	bool IsReallyDithered() const;
+	bool AreAnyPixelsDiscarded() const;
+	/// Whether this draw's sprites, as they stand, write every pixel of m_r (GSAlphaKnownRects).
+	bool SpritesWriteEveryPixelOfDrawRect() const;
+	bool IsDiscardingDstColor();
+	bool IsDiscardingDstRGB();
+	bool IsDiscardingDstAlpha() const;
+	bool TextureCoversWithoutGapsNotEqual();
+
+	using PS_ATST  = GSShader::PS_ATST;
+	using PS_AFAIL = GSShader::PS_AFAIL;
+
+	enum class CLUTDrawTestResult
+	{
+		NotCLUTDraw,
+		CLUTDrawOnCPU,
+		CLUTDrawOnGPU,
+	};
+
+	enum ShuffleProcessing
+	{
+		SHUFFLE_READ = 1,
+		SHUFFLE_WRITE,
+		SHUFFLE_READWRITE,
+	};
+
+	// Intermediate struct for determining DATE config.
+	struct DATEOptions
+	{
+		bool enabled;
+		bool barrier;
+		bool primid;
+		bool stencil_one;
+	};
+
+	// Internal enum for classifying texture shuffles.
+	enum class TextureShuffleType
+	{
+		None,
+		Copy,
+		Offset,
+		RegionRepeat8,
+		RegionRepeat16,
+		Reverse,
+		Swizzle,
+		SwizzleTex32,
+		TwoPixel,
+		GappedSwizzle,
+		HackShuffle,
+	};
+
+	// Enum for determining which channels to read/write in a texture shuffle.
+	enum TextureShuffleChannels : u32
+	{
+		TextureShuffleChannels_None = 0x0,
+		TextureShuffleChannels_RedToBlue = 0x1,
+		TextureShuffleChannels_BlueToRed = 0x2,
+		TextureShuffleChannels_GreenToAlpha = 0x4,
+		TextureShuffleChannels_AlphaToGreen = 0x8,
+		TextureShuffleChannels_RedCopy = 0x10,
+		TextureShuffleChannels_GreenCopy = 0x20,
+		TextureShuffleChannels_BlueCopy = 0x40,
+		TextureShuffleChannels_AlphaCopy = 0x80,
+		TextureShuffleChannels_BlueToAlpha = 0x100,
+
+		TextureShuffleChannels_ReadRed = TextureShuffleChannels_RedToBlue | TextureShuffleChannels_RedCopy,
+		TextureShuffleChannels_ReadGreen = TextureShuffleChannels_GreenToAlpha | TextureShuffleChannels_GreenCopy,
+		TextureShuffleChannels_ReadBlue = TextureShuffleChannels_BlueToRed | TextureShuffleChannels_BlueCopy |
+		                                  TextureShuffleChannels_BlueToAlpha,
+		TextureShuffleChannels_ReadAlpha = TextureShuffleChannels_AlphaToGreen | TextureShuffleChannels_AlphaCopy,
+
+		TextureShuffleChannels_WriteRed = TextureShuffleChannels_BlueToRed | TextureShuffleChannels_RedCopy,
+		TextureShuffleChannels_WriteGreen = TextureShuffleChannels_AlphaToGreen | TextureShuffleChannels_GreenCopy,
+		TextureShuffleChannels_WriteBlue = TextureShuffleChannels_RedToBlue | TextureShuffleChannels_BlueCopy,
+		TextureShuffleChannels_WriteAlpha = TextureShuffleChannels_GreenToAlpha | TextureShuffleChannels_AlphaCopy |
+		                                    TextureShuffleChannels_BlueToAlpha,
+
+		TextureShuffleChannels_ReadRedGreen = TextureShuffleChannels_ReadRed | TextureShuffleChannels_ReadGreen,
+		TextureShuffleChannels_ReadBlueAlpha = TextureShuffleChannels_ReadBlue | TextureShuffleChannels_ReadAlpha,
+
+		TextureShuffleChannels_WriteRedGreen = TextureShuffleChannels_WriteRed | TextureShuffleChannels_WriteGreen,
+		TextureShuffleChannels_WriteBlueAlpha = TextureShuffleChannels_WriteBlue | TextureShuffleChannels_WriteAlpha,
+
+		TextureShuffleChannels_ShuffleAcross = TextureShuffleChannels_RedToBlue | TextureShuffleChannels_GreenToAlpha |
+		                                       TextureShuffleChannels_BlueToRed | TextureShuffleChannels_AlphaToGreen |
+		                                       TextureShuffleChannels_BlueToAlpha,
+
+		// It's not actually possible to do a C16->C16 texture shuffle of B to A as they are the same group
+		// However you can do it by using C32 and offsetting the target vertices to point to B A, then mask as appropriate.
+		TextureShuffleChannels_SameGroup = TextureShuffleChannels_BlueToAlpha,
+	};
+
+	// Intermediate struct for texture shuffle detection.
+	struct TextureShuffleInfo
+	{
+		TextureShuffleType type = TextureShuffleType::None;
+		TextureShuffleChannels channels = TextureShuffleChannels_None;
+		bool real_16_bit_source = false;
+
+		operator bool() const
+		{
+			return type != TextureShuffleType::None;
+		}
+
+		void Disable()
+		{
+			type = TextureShuffleType::None;
+		}
+
+		bool SameGroupShuffle() const
+		{
+			return (channels & TextureShuffleChannels_SameGroup) != 0;
+		}
+	};
+
+	bool HasEEUpload(GSVector4i r);
+	CLUTDrawTestResult PossibleCLUTDraw();
+	CLUTDrawTestResult PossibleCLUTDrawAggressive();
+	bool CanUseSwPrimRender(bool no_rt, bool no_ds, bool draw_sprite_tex);
+	/// Writes held depth words (GSTextureCache::MaterialiseHeldPages) under what the copy road reads and writes.
+	void MaterialiseHeldUnderCopy();
+	bool (*SwPrimRender)(GSRendererHW&, bool invalidate_tc, bool add_ee_transfer);
+	/// The palette block copy of a draw that continues a copy run, and what SwPrimRender() does after it; false,
+	/// with nothing written, where Run() would not have taken it. With `effects` false, local memory only.
+	bool (*CopyRunCopy)(GSRendererHW&, const GSVector4i& bbox, bool effects);
+
+	bool SnapSpriteEdgesToPixelGrid();
+
+	template <bool linear>
+	void RoundSpriteOffset();
+
+	void CorrectSpriteCoverageForUpscale(GSTextureCache::Target* rt);
+
+	void DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Target* ds, GSTextureCache::Source* tex, const TextureMinMaxResult& tmm);
+
+	void ResetStates();
+
+	/// What Draw() knows about a draw that its after-draw upkeep reads.
+	struct DrawEffect
+	{
+		GSVector4i real_rect; ///< the draw's rectangle in the target, unscaled
+		GSVector2i resolution; ///< the display's, when the target may not grow past twice its height
+		const GSDrawingContext* context;
+		const GSLocalMemory::psm_t* frame_psm; ///< FRAME's format as Draw() took it
+		GSTextureCache::Target* old_rt; ///< a target replaced by double-buffering, to be invalidated
+		GSTextureCache::Target* old_ds;
+		u32 fm, fm_mask, zm; ///< frame mask, the format's mask bits, depth mask
+		bool no_rt, no_ds; ///< Draw()'s verdicts: no colour, no depth written
+		bool can_update_size;
+		bool skip_draw;
+	};
+	void ApplyDrawEffect(GSTextureCache::Target* rt, GSTextureCache::Target* ds, const DrawEffect& e);
+
+	/// The targets of the last draw that took the full path. A following draw into the same frame and depth buffer
+	/// whose targets need nothing (a row) skips the target search and the targets' upkeep before the draw.
+	struct RowRun
+	{
+		GSTextureCache::Target* rt = nullptr;
+		GSTextureCache::Target* ds = nullptr;
+		GSTexture* rt_tex = nullptr;
+		GSTexture* ds_tex = nullptr;
+		u32 frame = 0; ///< FRAME's base block, buffer width and format as the draw used them (its low word)
+		u64 zbuf = 0; ///< ZBUF's base block and format (its low word), with FRAME's buffer width above
+		bool open = false;
+		bool no_rt = false;
+		bool no_ds = false;
+	};
+	/// What the target search and the targets' upkeep may change, taken before and after them in check mode on a
+	/// draw that would have been a row.
+	struct RowWitness
+	{
+		struct Tgt
+		{
+			u64 tex0;
+			GSVector4i valid, drawn;
+			GSVector2i unscaled_size;
+			const GSTexture* texture;
+			float scale;
+			u32 end_block;
+			u64 last_draw;
+			int alpha_min, alpha_max;
+			bool dirty, fmt32, valid_rgb, valid_alpha_low, valid_alpha_high, rt_alpha_scale, alpha_range, used;
+			/// The first field that differs, or nullptr.
+			const char* Difference(const Tgt& o) const;
+		};
+		Tgt rt, ds;
+		GSVector4i r;
+		GSVector4 min_p, max_p;
+		GSVector4i scissor;
+		u32 vertices, indices;
+		u64 frame, zbuf, test, tex0;
+		const void* front_rt;
+		const void* front_ds;
+	};
+	/// Whether this draw continues the open row run. Read before the target search.
+	bool RowContinues(bool run_open, const GSTextureCache::Source* src, bool no_rt, bool no_ds, bool possible_shuffle,
+		bool possible_mem_clear);
+	void TakeRowWitness(RowWitness& w) const;
+	/// Check mode: counts and reports the first difference the full path made where a row would have skipped it.
+	void RowMismatch(const char* what, const char* detail = nullptr);
+	void OpenRowRun(GSTextureCache::Target* rt, GSTextureCache::Target* ds, bool no_rt, bool no_ds);
+
+	/// What the state derivation leaves for the rest of DrawPrims.
+	struct DerivedDraw
+	{
+		GSDevice::RecycledTexture tex_copy; ///< a copy of the source the draw samples
+		GSDevice::RecycledTexture temp_ds; ///< a depth buffer for stencil DATE
+		float vs_scale_x = 0.0f;
+		float vs_scale_y = 0.0f;
+		bool no_rt = false;
+	};
+	/// What a draw that may take a state entry computes before the entry is looked up: the alpha range (whose values
+	/// are facts of the entry's key) and the exact alpha-mask verdict, which reads the draw's alpha range before the
+	/// alpha test's correction of it.
+	struct DrawPrep
+	{
+		int blend_alpha_min = 0;
+		int blend_alpha_max = 255;
+		int rt_new_alpha_min = 0;
+		int rt_new_alpha_max = 255;
+		GSAlphaKnownBits::Known rt_new_alpha_known;
+		bool rt_new_alpha_via_union = false;
+		u8 exact_drop = 0;
+		bool alpha_written = false; ///< the frame-mask stage's colormask.wa, as the range was given it
+		u8 zmsk = 0; ///< ZBUF.ZMSK as the range saw it
+		u32 requested_alpha_fbmask = 0; ///< RequestedAlphaFbMask(), as the range was given it
+		GSAlphaKnownRects::ForDraw exact_drop_known{};
+		GSAlphaKnownRects::Set rt_new_alpha_rects;
+	};
+	/// DrawPrims' state derivation: m_conf from the registers, the draw, its target and its source. False when the
+	/// draw is dropped. `prep` is set when DrawState has run the vertex passes, the alpha-test range correction,
+	/// the alpha range and the exact alpha-mask verdict before it.
+	bool DeriveDrawState(GSTextureCache::Target* rt, GSTextureCache::Target* ds, GSTextureCache::Source* tex,
+		const TextureMinMaxResult& tmm, DATEOptions& date_options, float rtscale, const GSVector2i& rtsize,
+		const GSVector2i& rt_unscaled_size, const DrawPrep* prep, DerivedDraw& out);
+	/// The state derivation, or the state entry the table holds for the draw. False when the draw is dropped.
+	bool DrawState(GSTextureCache::Target* rt, GSTextureCache::Target* ds, GSTextureCache::Source* tex,
+		const TextureMinMaxResult& tmm, DATEOptions& date_options, float rtscale, const GSVector2i& rtsize,
+		const GSVector2i& rt_unscaled_size, DerivedDraw& out);
+	bool DrawStateSlow(GSTextureCache::Target* rt, GSTextureCache::Target* ds, GSTextureCache::Source* tex,
+		const TextureMinMaxResult& tmm, DATEOptions& date_options, float rtscale, const GSVector2i& rtsize,
+		const GSVector2i& rt_unscaled_size, DrawPrep& prep, const GSDrawRows::RegKey& reg, const GSDrawRows::VarKey& var,
+		bool keyed, DerivedDraw& out);
+	/// Whether the registers and the device allow a state entry at all.
+	bool DrawStateEligible(const DATEOptions& date_options);
+	/// ResetStates and the bindings: the start of every derivation.
+	void BeginDrawState(GSTextureCache::Target* rt, GSTextureCache::Target* ds);
+	/// Writes everything the derivation reads into the two keys. False when the draw takes a road that acts on what
+	/// it reads (a self-read, a source swap, a vertex rewrite) and always derives.
+	bool FillStateKeys(GSDrawRows::RegKey& reg, GSDrawRows::VarKey& var, const GSTextureCache::Target* rt,
+		const GSTextureCache::Target* ds, const GSTextureCache::Source* tex, const DrawPrep& prep, float rtscale,
+		const GSVector2i& rtsize, const GSVector2i& rt_unscaled_size);
+	/// prev_cb: the constant buffers as the previous draw left them, which the words this draw does not write keep.
+	void CaptureDrawState(GSDrawRows::StateBody& body, const GSTextureCache::Target* rt, bool derived_ok, const u32* prev_cb);
+	void ApplyDrawState(const GSDrawRows::StateBody& body, GSTextureCache::Target* rt, GSTextureCache::Target* ds,
+		GSTextureCache::Source* tex, const DrawPrep& prep, DerivedDraw& out);
+	void CorrectATEAlphaRange();
+
+	void HandleFlatShadedVertices();
+	/// Fills in the topology, the indices and the vertex offset for the draw's primitive class.
+	/// Returns false when the draw lights no pixel at all and must not be submitted.
+	bool SetupIA(float target_scale, float sx, float sy, bool req_vert_backup, const bool no_rt);
+	void EmulateTextureShuffleAndFbmask(GSTextureCache::Target* rt, GSTextureCache::Source* tex);
+	/// What the exact alpha-mask rules can do with this draw's alpha FBMSK without changing a
+	/// pixel -- clear it outright, have the shader write the target's known bits in its place, or
+	/// nothing -- and where nothing, why. The verdict drives the drop and the substitution below.
+	/// `known` receives what the decision relied on about the target's alpha.
+	u8 DecideExactAlphaMaskDrop(const GSTextureCache::Target* rt, u32 fbmask, GSAlphaKnownRects::ForDraw& known);
+	void ResolveHeldAlphaMask();
+	/// The alpha mask this draw asked for, which is not the one the shader ends up emulating once
+	/// the exact drop has cleared it. See GSDrawAlphaMask.h.
+	u32 RequestedAlphaFbMask() const
+	{
+		return GSDrawAlphaMask::AsRequested(m_exact_alpha_drop_fbmask_a, m_conf.ps.fbmask != 0,
+			static_cast<u32>(m_conf.cb_ps.FbMask.a));
+	}
+	u32 EmulateChannelShuffle(GSTextureCache::Target* src, bool test_only, GSTextureCache::Target* rt = nullptr);
+	/// `rt_alpha` is the target's alpha range as the blend sees it (CalculateAlphaRange).
+	void EmulateBlending(const GSDrawRows::AlphaRange& rt_alpha, DATEOptions& date_options, GSTextureCache::Target* rt,
+		bool can_scale_rt_alpha, bool& new_rt_alpha_scale);
+	/// The draw's alpha range for the derivation: every read of it is recorded (GSDrawRows::AlphaBound).
+	GSDrawRows::AlphaRange DrawAlpha();
+	/// IsOpaque() with the draw's alpha range read through DrawAlpha().
+	bool IsOpaqueDerived();
+	void CleanupDraw(bool invalidate_temp_src);
+
+	void EmulateTextureSampler(const GSTextureCache::Target* rt, const GSTextureCache::Target* ds,
+		GSTextureCache::Source* tex, const TextureMinMaxResult& tmm, GSDevice::RecycledTexture& src_copy);
+	void HandleTextureHazards(const GSTextureCache::Target* rt, const GSTextureCache::Target* ds,
+		const GSTextureCache::Source* tex, const TextureMinMaxResult& tmm, GSTextureCache::SourceRegion& source_region,
+		bool& target_region, GSVector2i& unscaled_size, float& scale, GSDevice::RecycledTexture& src_copy);
+	bool CanUseTexIsFB(const GSTextureCache::Target* rt, const GSTextureCache::Source* tex,
+		const TextureMinMaxResult& tmm);
+	bool HazardCopyCoversSampling(const GSTextureCache::Target* rt, const GSTextureCache::Target* ds,
+		const GSTextureCache::Source* tex, const GSVector4& copied_rect, const GSVector2i& copy_size,
+		const GSVector2i& scaled_copy_size, float scale);
+
+	/// The texel step per native pixel that every sprite of this draw agrees on, per axis, in the
+	/// GS's own sixteenths. False -- and both steps zeroed -- when the draw has no sprites or two of
+	/// them walk the texture at different rates, because the shader carries one step for the whole
+	/// draw. See GSNativeTexelGridPolicy.h.
+	bool GetAgreedSpriteTexelSteps(GSNativeTexelStep& step_u, GSNativeTexelStep& step_v) const;
+
+	/// Whether most of this draw, by area, shows each texel of its texture as a large block, so that
+	/// a generated upscale of the texture has to give way to the original texels.
+	/// See GSTexelAddressedDraw.h.
+	bool DrawReadsTexelsAsColours() const;
+	bool IsFastStencilShadowDraw() const;
+
+	void EmulateZbuffer(const GSTextureCache::Target* ds);
+	void EmulateAA1(float target_scale);
+	void EmulateAlphaTest(DATEOptions& date_options);
+	void EmulateAlphaTestSecondPass();
+	void ConfigureDepthFeedback(bool rov_depth = false);
+
+	/// `alpha_written` and `requested_alpha_fbmask` are the frame-mask stage's colormask.wa and
+	/// RequestedAlphaFbMask(), passed in so that a draw that may take a state entry can run this first.
+	void CalculateAlphaRange(GSTextureCache::Target* rt, GSTextureCache::Target* ds, DATEOptions& date_options,
+		bool alpha_written, u32 requested_alpha_fbmask,
+		int& blend_alpha_min, int& blend_alpha_max, int& rt_new_alpha_min, int& rt_new_alpha_max,
+		GSAlphaKnownBits::Known& rt_new_alpha_known, bool& rt_new_alpha_via_union,
+		GSAlphaKnownRects::Set& rt_new_alpha_rects);
+	void DetermineAlphaScaling(GSTextureCache::Target* rt, GSTextureCache::Source* tex,
+		bool req_source_update, const GSDrawRows::AlphaBound& rt_new_alpha_max, bool& can_scale_rt_alpha, bool& new_scale_rt_alpha);
+
+	bool EmulateDATEEarlyFail(DATEOptions& date, GSTextureCache::Target* rt);
+	void EmulateDATESelectMethod(DATEOptions& date, GSTextureCache::Target* rt, int& blend_alpha_min, int& blend_alpha_max);
+	void EmulateDATEGetConfig(DATEOptions& date, bool scale_rt_alpha, GSDevice::RecycledTexture& temp_ds);
+
+	void EmulateDither();
+	u32 GetDitherPhase(const GIFRegDIMX& DIMX, float scale);
+
+	void DetermineVSConfig(GSTextureCache::Target* rt, float rtscale, const GSVector2i& rtsize,
+		const GSVector2i& unscaled_size, float& vs_scale_x, float& vs_scale_y);
+	void DetermineBarriers(GSTextureCache::Target* rt, GSTextureCache::Source* tex);
+
+	void GetForcedROVUsage(bool& color_cov, bool& depth_rov); // Whether having color or depth with the current config forces the other.
+	void DetermineROVUsage(GSTextureCache::Target* rt, GSTextureCache::Target* ds); // Heuristics to determine whether to enable/disable ROV
+	void ConfigureROV(bool color_rov, bool depth_rov); // Actual config for ROV
+	void ConvertTextureTypeROV(GSTextureCache::Target* rt, GSTextureCache::Target* ds); // Convert to RW capable textures if needed.
+	void ConvertTextureTypeROVSingle(GSTextureCache::Target* tgt, bool shader_write); // Helper to do the above.
+
+	void SetTCOffset();
+	bool NextDrawColClip() const;
+	bool IsColClipCounterDraw() const;
+	bool SetupStencilCounterDraw(GSTextureCache::Target* rt);
+	bool IsPossibleChannelShuffle() const;
+	bool IsPageCopy() const;
+	bool NextDrawMatchesShuffle() const;
+
+	// Texture shuffle functions.
+	bool IsSplitTextureShuffle(GIFRegTEX0& rt_TEX0, GSVector4i& valid_area);
+	void FixSplitTextureShuffleState();
+	GSVector4i GetSplitTextureShuffleDrawRect() const;
+	u32 GetEffectiveTextureShuffleFbmsk() const;
+	template<u32 primclass, bool fst>
+	TextureShuffleInfo DetectTextureShuffleImpl();
+	void DetectTextureShuffle();
+	void DetectTextureShuffleSecondPass(GSTextureCache::Target* rt, GSTextureCache::Source* tex);
+	template<u32 primclass, bool fst>
+	void ConvertSpriteTextureShuffleImpl(GSTextureCache::Target* rt, GSTextureCache::Source* tex);
+	void ConvertSpriteTextureShuffle(GSTextureCache::Target* rt, GSTextureCache::Source* tex);
+
+	static u32 Convert32BitTo16BitMask(u32 m);
+
+	static GSVector4i GetDrawRectForPages(u32 bw, u32 psm, u32 num_pages);
+	bool IsSinglePageDraw() const;
+	bool TryToResolveSinglePageFramebuffer(GIFRegFRAME& FRAME, bool only_next_draw);
+
+	bool IsSplitClearActive() const;
+	bool CheckNextDrawForSplitClear(const GSVector4i& r, u32* pages_covered_by_this_draw) const;
+	bool IsStartingSplitClear();
+	bool ContinueSplitClear();
+	void FinishSplitClear();
+
+	bool NeedsBlending();
+	bool IsRTWritten();
+	bool IsRTWrittenLive(const GIFRegALPHA& ALPHA) override;
+	bool IsDepthAlwaysPassing();
+	/// The case IsDepthAlwaysPassing() cannot reach: the depth buffer still holds the value it was
+	/// cleared to in every pixel, so a GREATER or GEQUAL test against it is answerable.
+	bool AllDepthTestsPassOnClearedTarget(const GSTextureCache::Target* ds);
+	bool IsUsingCsInBlend();
+	bool IsUsingAsInBlend();
+
+	// CRC Hacks
+	bool IsBadFrame();
+	GSC_Ptr m_gsc = nullptr;
+	OI_Ptr m_oi = nullptr;
+	MV_Ptr m_mv = nullptr;
+	int m_skip = 0;
+	int m_skip_offset = 0;
+
+	bool m_process_texture = false;
+	bool m_downscale_source = false;
+
+	/// This draw samples the guest's own texels in place of a generated upscale
+	/// (GSTextureCache::GetNativeTexture). Set by EmulateTextureSampler. The source is still a
+	/// replacement, but the texture bound is not, so alpha snapping for packs does not apply.
+	bool m_source_is_native_texels = false;
+	// This draw is an alpha stencil counter going through the blend unit (GSFastStencilShadow.h).
+	// Decided in Draw() before the texture lookup, read by DrawPrims().
+	bool m_fast_stencil_shadow = false;
+
+	TextureShuffleInfo m_texture_shuffle;
+
+	u32 m_split_texture_shuffle_pages = 0;
+	u32 m_split_texture_shuffle_pages_high = 0;
+	u32 m_split_texture_shuffle_start_FBP = 0;
+	u32 m_split_texture_shuffle_start_TBP = 0;
+	u32 m_split_texture_shuffle_fbw = 0;
+
+	// GetDitherPhase's answer, and the two inputs it was computed from. A scale of -1 is the
+	// "nothing cached yet" mark, since no target ever has a negative scale and DIMX == 0 is a
+	// perfectly ordinary matrix.
+	u64 m_dither_phase_dimx = 0;
+	float m_dither_phase_scale = -1.0f;
+	u32 m_dither_phase = 0;
+
+	u32 m_last_channel_shuffle_fbmsk = 0;
+	u32 m_last_channel_shuffle_fbp = 0;
+	u32 m_last_channel_shuffle_tbp = 0;
+	u32 m_last_channel_shuffle_end_block = 0;
+	u32 m_channel_shuffle_width = 0;
+	GSVector4i m_channel_shuffle_src_valid = GSVector4i::zero();
+	bool m_full_screen_shuffle = false;
+	// EmulateChannelShuffle replaced this draw's sprites with a quad of its own. Reset per draw in
+	// DrawPrims; CorrectSpriteCoverageForUpscale leaves such a quad alone.
+	bool m_channel_shuffle_rebuilt_quad = false;
+	// The pixel-grid snap moved a sprite in this draw and wrote every sprite's far-edge sample
+	// limit into its ST. Reset per draw in DrawPrims.
+	bool m_sprite_edge_clamp = false;
+	std::vector<GSVector2> m_sprite_edge_limits;
+
+	GSTextureCache::Target* m_last_rt;
+
+	// GSAlphaBitLogicOp: the target whose last destination-alpha draw could have shared a stencil
+	// copy, and its DATM. See the comment where m_date_draw_shares_copy is set.
+	GSTexture* m_date_chain_rt = nullptr;
+
+	// SetupStencilCounterDraw's index order, by sign, and its per-primitive scratch. The draw points at the
+	// indices until the backend has issued it.
+	std::vector<u16> m_stencil_counter_indices;
+	std::vector<u8> m_stencil_counter_signs;
+	u8 m_date_chain_datm = 0;
+
+	// Blend carry-over (GSBlendCarry.h): the last blended draw of the donor class, and whether the draw in
+	// hand had its blend elided as the identity (set at the blend gate in DrawPrims).
+	GSBlendCarry::Donor m_blend_carry;
+	bool m_blend_identity = false;
+	void CarryBlendBeforeSubmit(GSTextureCache::Target* rt, GSTextureCache::Target* ds);
+	bool m_date_draw_shares_copy = false; ///< This draw's DATE keeps a shared copy true (set by EmulateDATESelectMethod).
+
+	GIFRegFRAME m_split_clear_start = {};
+	GIFRegZBUF m_split_clear_start_Z = {};
+	u32 m_split_clear_pages = 0; // if zero, inactive
+	u32 m_split_clear_color = 0;
+
+	bool m_userhacks_tcoffset = false;
+	// Set around the software Move() fallback: its source readback must not be deferred by
+	// GSHardwareDownloadMode::Asynchronous, because the blit consumes local memory right away.
+	bool m_force_synchronous_local_readback = false;
+	float m_userhacks_tcoffset_x = 0.0f;
+	float m_userhacks_tcoffset_y = 0.0f;
+
+	GSVector2i m_lod = {}; // Min & Max level of detail
+
+	GIFRegALPHA m_optimized_blend = {}; // Save for ROV setup
+	GSDrawRows::StateTable m_states;
+	RowRun m_row_run;
+	u32 m_alpha_asked = 0; ///< the alpha bounds the derivation in hand read by value (GSDrawRows::AlphaBound)
+	u16 m_draw_entry = GSDrawRows::StateTable::NONE; ///< the entry the draw in hand took its state from, NONE if derived
+	const DrawPrep* m_draw_prep = nullptr; ///< set while a draw that may take a state entry derives
+	bool m_row_acted = false; ///< the derivation acted on a texture or the vertices, or read a fact the keys lack
+	bool m_row_colclip_written = false; ///< the derivation set colclip_mode and colclip_frame
+	bool m_row_optimized_blend_written = false; ///< the derivation set m_optimized_blend
+	s8 m_state_caps = -1; ///< whether the device and settings allow state entries; -1 until known
+
+	GSHWDrawConfig m_conf = {};
+	HWCachedCtx m_cached_ctx;
+
+	// The alpha byte of FBMSK that the exact alpha drop cleared out of this draw, or
+	// GSDrawAlphaMask::NothingDropped. Reset per draw by ResetStates().
+	int m_exact_alpha_drop_fbmask_a = GSDrawAlphaMask::NothingDropped;
+
+	// An exact alpha-mask decision held over the blend selection. While fbmask is non-zero the
+	// shader has no mask but the blend decisions read the barrier that mask would have required,
+	// so the blend road cannot move because of the decision. ResolveHeldAlphaMask() settles it.
+	// Reset per draw by ResetStates().
+	struct HeldAlphaMask
+	{
+		u32 fbmask = 0; ///< FBMSK as the draw asked for it; zero means nothing is held
+		u32 ps_fbmask = 0; ///< the shader's four-channel nibble for that mask
+		bool substitute = false; ///< what is held is the substitution, not the drop
+		/// The two constants a standing substitution hands the shader. Applied in
+		/// ResolveHeldAlphaMask() rather than at the framebuffer-mask site, so a substitution
+		/// that gets put back leaves the constant buffer exactly as it found it.
+		GSDrawAlphaMask::Substitution substitution;
+	};
+	HeldAlphaMask m_held_alpha_mask;
+
+	// software sprite renderer state
+	GSSwPrimRenderState m_sw_prim;
+
+	// The burst memo (GSBurstMemo.h, GSRendererHWBurstMemo.cpp): copy-road draws recorded as they run, and
+	// skipped when a later burst repeats them.
+	GSBurstMemo::Memo m_burst_memo;
+	bool m_burst_memo_enabled = false;
+	/// Set by CanUseSwPrimRender: its true verdict rests on finding no target at the texture (if any) and, when
+	/// it looked there, at the frame. Only such a verdict can be reused by a skipped draw.
+	bool m_copy_road_no_targets = false;
+	bool m_copy_road_frame_checked = false;
+
+	// Copy runs (GSRendererHWCopyRuns.cpp): the registers of the palette block copy that armed the run, with the
+	// fields a continuing copy may change cleared, and the texture address the run last found no target at.
+	struct CopyRunKey
+	{
+		u64 regs[19];
+	};
+	CopyRunKey m_copy_run_key = {};
+	u32 m_copy_run_tbp0 = 0;
+	/// Copies that continued a run, for tests.
+	u64 m_copy_run_copies = 0;
+	static void MakeCopyRunKey(CopyRunKey& key, const GSDrawingEnvironment& env, const GSDrawingContext& ctx);
+	void CopyRunArm();
+	bool FrameMayReachTarget(const GSVector4i& bbox) const;
+	/// What ContinueCopyRun() does before the copy: false where the draw goes to the tail instead.
+	bool PrepareCopyRunCopy(GSVector4i& bbox);
+	/// ... and after it.
+	void FinishCopyRunCopy(const GSVector4i& bbox);
+	void CopyRunDisarm() { m_copy_run_armed = false; }
+	/// Draw()'s draw rectangle (m_r, m_r_no_scissor) from the vertex trace; false when it is empty.
+	bool SetDrawRect();
+
+	bool BurstMemoSkip();
+	bool BurstMemoWakes() const;
+	bool BurstMemoBeforeCopy();
+	void BurstMemoAfterCopy(bool recorded, bool copied);
+	bool BurstMemoTryHit();
+	bool BurstMemoHit();
+	void BurstMemoApply(const GSBurstMemo::Record& d);
+	void BurstMemoCloseRecording();
+	void BurstMemoEndSequence();
+	/// Closes the burst being recorded and ends the one being skipped, calling out only when there is one: most
+	/// draws a title makes pass here with neither.
+	void BurstMemoStop()
+	{
+		if (m_burst_memo.recording)
+			BurstMemoCloseRecording();
+		if (!m_burst_memo.candidates.empty() || m_burst_memo.position)
+			BurstMemoEndSequence();
+	}
+	void BurstMemoEndFrame(bool idle_frame);
+	void BurstMemoInvalidate(u32 bp, u32 bw, u32 psm, const GSVector4i& r);
+	void BurstMemoFlushWaitingSlow();
+	/// Makes the texture cache invalidations skipped draws left waiting: before anything that reads the texture
+	/// cache.
+	void BurstMemoFlushWaiting()
+	{
+		if (m_burst_memo.pending_count)
+			BurstMemoFlushWaitingSlow();
+	}
+	bool BurstMemoPagesWrittenSince(const std::vector<u32>& pages, u64 seq) const;
+	u64 BurstMemoPaletteHash(u32 entries);
+	bool BurstMemoTargetAt(u32 bp, u32 psm) const;
+
+public:
+	/// Re-reads the settings the burst memo depends on, and forgets what it recorded.
+	void RefreshBurstMemo();
+	bool SkipMemoizedDraw() override;
+	bool ContinueCopyRun() override;
+	u64 CopyRunCopies() const { return m_copy_run_copies; }
+
+	GSRendererHW();
+	virtual ~GSRendererHW() override;
+
+	__fi static GSRendererHW* GetInstance() { return static_cast<GSRendererHW*>(g_gs_renderer.get()); }
+
+	/// The software sprite road's scratch; tests reach its palette_block_copy switch through this.
+	GSSwPrimRenderState& GetSwPrimState() { return m_sw_prim; }
+	__fi HWCachedCtx* GetCachedCtx() { return &m_cached_ctx; }
+	__fi u32 GetLastChannelShuffleFBP() { return m_last_channel_shuffle_fbp; }
+	void Destroy() override;
+	void ReleaseDeviceObjects() override;
+
+	void UpdateRenderFixes() override;
+	bool DrawClearsScanMask() const override;
+	bool HasMoveHook() const override { return m_mv != nullptr; }
+
+	bool CanUpscale() override;
+	float GetUpscaleMultiplier() override;
+	void Lines2Sprites();
+	bool VerifyIndices();
+	void ExpandLineIndices();
+	/// What LinesToPixelRuns() did with the draw. The three outcomes are not two: a draw the GS
+	/// lights no pixel for is not a draw the pixel runs could not take, and the fallback figure is
+	/// wrong for it -- it would paint a stripe the console never paints.
+	enum class LineRunResult
+	{
+		Converted, ///< The vertex buffer now holds the rectangles. Draw them.
+		NothingLit, ///< The GS lights no pixel for any line in the draw. Draw nothing.
+		Refused, ///< The draw is untouched and needs the expanded-line fallback.
+	};
+	LineRunResult LinesToPixelRuns(bool aa1);
+	/// Whether this AA1 line draw takes the vertex-shader expansion rather than the pixel runs,
+	/// which it does above native wherever the device can expand lines.
+	bool AA1LineExpandsAboveNative(float target_scale);
+	void SnapPointsToNativePixel();
+	GSVector4 RealignTargetTextureCoordinate(const GSTextureCache::Source* tex);
+	void ApplyNativeWTexOffset(const GSTextureCache::Source* tex, const GSTextureCache::Target* rt,
+		const GSTextureCache::Target* ds, GSVector2& texture_offset);
+	GSVector4i ComputeBoundingBoxRT(const GSVector2i& rtsize, float rtscale);
+	GSVector4i ComputeBoundingBoxTex(const GSVector2i& texsize, const GSVector4i& coverage, const GSVector4i& region, float texscale);
+	void MergeSprite(GSTextureCache::Source* tex);
+	float GetTextureScaleFactor() override;
+	GSVector2i GetValidSize(const GSTextureCache::Source* tex = nullptr, const bool is_shuffle = false);
+	GSVector2i GetTargetSize(const GSTextureCache::Source* tex = nullptr, const bool can_expand = true, const bool is_shuffle = false);
+
+	void Reset(bool hardware_reset) override;
+	void UpdateSettings(const Pcsx2Config::GSOptions& old_config) override;
+	void VSync(u32 field, bool registers_written, bool idle_frame) override;
+
+	GSTexture* GetOutput(int i, float& scale, int& y_offset) override;
+	GSTexture* GetFeedbackOutput(float& scale) override;
+	void InvalidateVideoMem(const GIFRegBITBLTBUF& BITBLTBUF, const GSVector4i& r) override;
+	void InvalidateLocalMem(const GIFRegBITBLTBUF& BITBLTBUF, const GSVector4i& r, bool clut = false) override;
+	void Move() override;
+	void Draw() override;
+
+	/// One-line PS2-level description of the draw about to be issued: primitive type,
+	/// framebuffer/depth/texture addresses and formats, blend and test state. Used for
+	/// the per-draw graphics-debugger label, so a capture names draws in PS2 terms
+	/// instead of showing an anonymous list.
+	std::string DescribeDraw() const;
+
+	/// Opens a per-draw ledger row from the PS2 register state. The backend half of the
+	/// row is filled at submit; see GSDrawLog.
+	void RecordDrawLogEntry() const;
+
+	void PurgeTextureCache(bool sources, bool targets, bool hash_cache) override;
+	void ReadbackTextureCache() override;
+	void MaterialiseHeldLocalMemory() override;
+
+	GSTexture* LookupPaletteSource(u32 CBP, u32 CPSM, u32 CBW, GSVector2i& offset, float* scale, const GSVector2i& size) override;
+
+	/// Called by the texture cache to know for certain whether there is a channel shuffle.
+	bool TestChannelShuffle(GSTextureCache::Target* src);
+
+	/// Returns true if the Frame and TEX0 are sharing channels
+	bool ChannelsSharedTEX0FRAME();
+
+	/// Returns true if the specified texture address matches the frame or Z buffer.
+	bool IsTBPFrameOrZ(u32 tbp, bool frame_only = false);
+
+	/// Returns true if the draws appear to be a manual deswizzle.
+	void HandleManualDeswizzle();
+
+	/// Offsets the current draw, used for RT-in-RT. Offsets are relative to the *current* FBP, not the new FBP.
+	void OffsetDraw(s32 fbp_offset, s32 zbp_offset, s32 xoffset, s32 yoffset);
+
+	/// Replaces vertices with the specified fullscreen quad.
+	void ReplaceVerticesWithSprite(const GSVector4i& unscaled_rect, const GSVector4i& unscaled_uv_rect,
+		const GSVector2i& unscaled_size, const GSVector4i& scissor);
+	void ReplaceVerticesWithSprite(const GSVector4i& unscaled_rect, const GSVector2i& unscaled_size);
+
+	/// Starts a HLE'ed hardware draw, which can be further customized by the caller.
+	GSHWDrawConfig& BeginHLEHardwareDraw(
+		GSTexture* rt, GSTexture* ds, float rt_scale, GSTexture* tex, float tex_scale, const GSVector4i& unscaled_rect);
+
+	/// Submits a previously set up HLE hardware draw, copying any textures as needed if there's hazards.
+	void EndHLEHardwareDraw(bool force_copy_on_hazard = false);
+
+	/// Compute the drawlist (if not already present) and bounding boxes for the current draw.
+	std::size_t ComputeDrawlistGetSize(float scale);
+
+	/// Does the current draw allow using AA1 coverage (if AA1 is enabled).
+	bool IsCoverageAlphaSupported() override;
+};

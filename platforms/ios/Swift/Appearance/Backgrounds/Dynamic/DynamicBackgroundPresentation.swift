@@ -1,0 +1,676 @@
+// DynamicBackgroundPresentation.swift — ARMSX2 dynamic background integration
+// SPDX-License-Identifier: GPL-3.0+
+
+import SwiftUI
+import UIKit
+
+private struct ClearLiquidGlassUIEnvironmentKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
+extension EnvironmentValues {
+    var clearLiquidGlassUIEnabled: Bool {
+        get { self[ClearLiquidGlassUIEnvironmentKey.self] }
+        set { self[ClearLiquidGlassUIEnvironmentKey.self] = newValue }
+    }
+}
+
+/// Puts every app-owned overlay on the Quick Menu's Regular or Clear glass. Only the material
+/// is shared; geometry and interaction stay with each surface.
+private struct QuickMenuLiquidGlassConfigurationModifier: ViewModifier {
+    @State private var settings = SettingsStore.shared
+
+    func body(content: Content) -> some View {
+        content.environment(
+            \.clearLiquidGlassUIEnabled,
+            settings.appearance.clearLiquidGlassUIQuickMenu
+        )
+    }
+}
+
+extension View {
+    func quickMenuLiquidGlassConfiguration() -> some View {
+        modifier(QuickMenuLiquidGlassConfigurationModifier())
+    }
+
+    /// The lightweight renderer while a dense editor is mounted, leaving the saved quality alone.
+    func lightweightLiveWallpaperWhilePresented() -> some View {
+        modifier(LightweightLiveWallpaperPresentationModifier())
+    }
+}
+
+private struct LightweightLiveWallpaperPresentationModifier: ViewModifier {
+    @State private var acquiredOverride = false
+
+    func body(content: Content) -> some View {
+        content
+            .onAppear {
+                guard !acquiredOverride else { return }
+                acquiredOverride = true
+                UIFrameRateSettings.shared
+                    .beginLightweightLiveWallpaperPresentation()
+            }
+            .onDisappear {
+                guard acquiredOverride else { return }
+                acquiredOverride = false
+                UIFrameRateSettings.shared
+                    .endLightweightLiveWallpaperPresentation()
+            }
+    }
+}
+
+struct DynamicBackgroundRendererView: View {
+    let preferences: DynamicAppearancePreferences
+    var allowsMainMenuThermalFallback = false
+    @State private var isRenderingEnabled = true
+
+    var body: some View {
+        Group {
+            if isRenderingEnabled {
+                let theme = DynamicBackgroundTheme(preferences: preferences)
+                DynamicBackgroundStyleCrossfadeView(
+                    style: preferences.dynamicBackground,
+                    theme: theme,
+                    allowsMainMenuThermalFallback:
+                        allowsMainMenuThermalFallback
+                )
+            }
+        }
+        .onAppear {
+            isRenderingEnabled = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIScene.willDeactivateNotification)) { _ in
+            isRenderingEnabled = false
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIScene.didActivateNotification)) { _ in
+            isRenderingEnabled = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: AppState.releaseMenuBackgroundResourcesNotification)) { _ in
+            isRenderingEnabled = false
+        }
+    }
+}
+
+private struct DynamicBackgroundStylePresentation: Equatable {
+    let style: DynamicBackgroundStyle
+    let theme: DynamicBackgroundTheme
+
+    var paletteSignature: DynamicBackgroundPaletteSignature {
+        DynamicBackgroundPaletteSignature(theme: theme)
+    }
+}
+
+/// The palette-facing subset of a dynamic theme. Geometry-only setting edits
+/// continue updating their existing renderer, and so does a colour change for a
+/// renderer that blends palettes itself. Every other source of colour (theme
+/// shortcuts, cover previews, favourites, and the Context Menu) crossfades.
+private struct DynamicBackgroundPaletteSignature: Equatable {
+    let sharedPalette: ThemePalette
+    let sharedCustomColor: SavedPaletteColor?
+    let sharedMultiColor: ThemeMultiColorSelection
+    let ribbonPalette: ThemePalette
+    let ribbonCustomColor: SavedPaletteColor?
+    let ribbonMultiColor: ThemeMultiColorSelection
+    let disablesDarkPaletteEffects: Bool
+    let paletteDarkEffectIntensity: Double
+    let sharedPaletteGradientTilt: Double
+    let sharedPaletteGradientOffsetX: Double
+    let sharedPaletteGradientOffsetY: Double
+    let sharedPaletteGradientWidth: Double
+    let sharedPaletteGradientCurvature: Double
+    let multiColorAnimationSpeed: Double
+    let multiColorAnimationSmoothness: Double
+    let multiColorAnimationSpread: Double
+    let glassGradientPreset: PlayStation3XMBGradientPreset
+    let glassColorR: Double
+    let glassColorG: Double
+    let glassColorB: Double
+    let glassGradientTopMultiplier: Double
+    let glassGradientBottomMultiplier: Double
+
+    init(theme: DynamicBackgroundTheme) {
+        let settings = theme.particleSettings
+        let glass = settings.playStation3XMB
+        sharedPalette = theme.sharedPalette
+        sharedCustomColor = theme.sharedCustomColor
+        sharedMultiColor = theme.sharedMultiColor
+        ribbonPalette = theme.ribbonPalette
+        ribbonCustomColor = theme.ribbonCustomColor
+        ribbonMultiColor = theme.ribbonMultiColor
+        disablesDarkPaletteEffects = settings.disablesDarkPaletteEffects
+        paletteDarkEffectIntensity = settings.paletteDarkEffectIntensity
+        sharedPaletteGradientTilt = settings.sharedPaletteGradientTilt
+        sharedPaletteGradientOffsetX = settings.sharedPaletteGradientOffsetX
+        sharedPaletteGradientOffsetY = settings.sharedPaletteGradientOffsetY
+        sharedPaletteGradientWidth = settings.sharedPaletteGradientWidth
+        sharedPaletteGradientCurvature = settings.sharedPaletteGradientCurvature
+        multiColorAnimationSpeed = settings.multiColorAnimationSpeed
+        multiColorAnimationSmoothness = settings.multiColorAnimationSmoothness
+        multiColorAnimationSpread = settings.multiColorAnimationSpread
+        glassGradientPreset = glass.gradientPreset
+        glassColorR = glass.colorR
+        glassColorG = glass.colorG
+        glassColorB = glass.colorB
+        glassGradientTopMultiplier = glass.gradientTopMul
+        glassGradientBottomMultiplier = glass.gradientBotMul
+    }
+}
+
+private struct DynamicBackgroundStyleLayer: Identifiable {
+    let id: UUID
+    var presentation: DynamicBackgroundStylePresentation
+    var opacity: Double
+}
+
+/// Crossfades every live-wallpaper engine without blending their geometry, so unrelated scenes
+/// never slide between coordinate systems while a Theme Preset changes.
+private struct DynamicBackgroundStyleCrossfadeView: View {
+    let style: DynamicBackgroundStyle
+    let theme: DynamicBackgroundTheme
+    let allowsMainMenuThermalFallback: Bool
+
+    @State private var layers: [DynamicBackgroundStyleLayer]
+    @State private var activeLayerID: UUID
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private let transitionDuration: TimeInterval = 0.46
+
+    init(
+        style: DynamicBackgroundStyle,
+        theme: DynamicBackgroundTheme,
+        allowsMainMenuThermalFallback: Bool
+    ) {
+        self.style = style
+        self.theme = theme
+        self.allowsMainMenuThermalFallback = allowsMainMenuThermalFallback
+
+        let id = UUID()
+        _layers = State(
+            initialValue: [
+                DynamicBackgroundStyleLayer(
+                    id: id,
+                    presentation: DynamicBackgroundStylePresentation(
+                        style: style,
+                        theme: theme
+                    ),
+                    opacity: 1
+                )
+            ]
+        )
+        _activeLayerID = State(initialValue: id)
+    }
+
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack {
+                ForEach(layers) { layer in
+                    ResolutionAwareDynamicBackgroundContentView(
+                        style: layer.presentation.style,
+                        theme: layer.presentation.theme,
+                        allowsMainMenuThermalFallback:
+                            allowsMainMenuThermalFallback
+                    )
+                    // Removing the outgoing renderer must not move the incoming
+                    // camera's viewport, so Crystal keeps one projection all fade.
+                    .frame(
+                        width: geometry.size.width,
+                        height: geometry.size.height
+                    )
+                    .clipped()
+                    .opacity(layer.opacity)
+                    .allowsHitTesting(false)
+                }
+            }
+            .frame(
+                width: geometry.size.width,
+                height: geometry.size.height
+            )
+            .clipped()
+        }
+        .ignoresSafeArea()
+        .onChange(of: requestedPresentation) { _, next in
+            updatePresentation(to: next)
+        }
+    }
+
+    private var requestedPresentation: DynamicBackgroundStylePresentation {
+        DynamicBackgroundStylePresentation(style: style, theme: theme)
+    }
+
+    private func updatePresentation(
+        to next: DynamicBackgroundStylePresentation
+    ) {
+        guard let activeIndex = layers.firstIndex(
+            where: { $0.id == activeLayerID }
+        ) else {
+            replaceAllLayers(with: next)
+            return
+        }
+
+        let current = layers[activeIndex].presentation
+        guard current != next else { return }
+
+        guard !reduceMotion else {
+            replaceAllLayers(with: next)
+            return
+        }
+
+        let styleChanges = current.style != next.style
+        let paletteChanges =
+            current.paletteSignature != next.paletteSignature
+        let blendsPaletteInPlace = switch next.style {
+        case .faceButtons:
+            true
+        case .playStation3XMBByMart:
+            !current.theme.usesPlayStation4PaletteBackdrop
+                && !next.theme.usesPlayStation4PaletteBackdrop
+        default:
+            false
+        }
+
+        // Mid-crossfade, a palette change retargets the incoming layer instead of stacking.
+        let crossfadeRunning = layers.count > 1
+        guard styleChanges
+                || (paletteChanges && !blendsPaletteInPlace && !crossfadeRunning) else {
+            layers[activeIndex].presentation = next
+            return
+        }
+
+        let retiringIDs = Set(layers.map(\.id))
+        let nextID = UUID()
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            layers.append(
+                DynamicBackgroundStyleLayer(
+                    id: nextID,
+                    presentation: next,
+                    opacity: 0
+                )
+            )
+            activeLayerID = nextID
+            if layers.count > 4 {
+                layers.removeFirst(layers.count - 4)
+            }
+        }
+
+        Task { @MainActor in
+            await Task.yield()
+            withAnimation(.easeInOut(duration: transitionDuration)) {
+                for index in layers.indices {
+                    layers[index].opacity = layers[index].id == nextID ? 1 : 0
+                }
+            }
+
+            try? await Task.sleep(for: .seconds(transitionDuration + 0.08))
+            layers.removeAll {
+                retiringIDs.contains($0.id) && $0.id != activeLayerID
+            }
+        }
+    }
+
+    private func replaceAllLayers(
+        with presentation: DynamicBackgroundStylePresentation
+    ) {
+        let id = UUID()
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            layers = [
+                DynamicBackgroundStyleLayer(
+                    id: id,
+                    presentation: presentation,
+                    opacity: 1
+                )
+            ]
+            activeLayerID = id
+        }
+    }
+
+}
+
+/// Every dynamic background, editor preview included, goes through here so none of them falls
+/// back to the environment's frame rate and resolution instead of the user's.
+struct ResolutionAwareDynamicBackgroundContentView: View {
+    let style: DynamicBackgroundStyle
+    let theme: DynamicBackgroundTheme
+    var allowsMainMenuThermalFallback = false
+
+    @State private var frameRates = UIFrameRateSettings.shared
+    @State private var thermalState = ProcessInfo.processInfo.thermalState
+
+    var body: some View {
+        let configuration = frameRates.configuration(
+            usingLightweightLiveWallpaperQuality:
+                shouldUseLightweightThermalQuality
+        )
+        DynamicBackgroundContentView(style: style, theme: theme)
+            .environment(\.uiFrameRateConfiguration, configuration)
+            // Canvas and Metal keep their old backing when only an environment
+            // value changes; a resolution identity recreates them.
+            .id(
+                "\(style.id)-\(configuration.dynamicWallpaperResolution.rawValue)"
+                    + "-face:\(configuration.dynamicFaceButtonResolution.rawValue)"
+                    + "-original:\(configuration.usesOriginalFullQualityLiveWallpapers)"
+            )
+            .onReceive(
+                NotificationCenter.default.publisher(
+                    for: ProcessInfo.thermalStateDidChangeNotification
+                )
+            ) { _ in
+                thermalState = ProcessInfo.processInfo.thermalState
+            }
+    }
+
+    private var shouldUseLightweightThermalQuality: Bool {
+        guard allowsMainMenuThermalFallback,
+              frameRates.usesOriginalFullQualityLiveWallpapers,
+              frameRates.usesLightweightQualityOnHotTemperature
+        else {
+            return false
+        }
+
+        switch thermalState {
+        case .serious, .critical:
+            return true
+        case .nominal, .fair:
+            return false
+        @unknown default:
+            return false
+        }
+    }
+}
+
+/// Preserves the stock full-screen coordinate system, compresses that rendered
+/// result into a smaller drawing-group target, then enlarges the one surface.
+/// Unlike `displayScale`, this establishes concrete reduced bounds for the
+/// offscreen texture. Metal content uses its own explicit drawable size.
+struct DynamicWallpaperSwiftUIRenderSurfaceModifier: ViewModifier {
+    var opaque = false
+    var usesFaceButtonResolution = false
+    @Environment(\.uiFrameRateConfiguration) private var frameRates
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        let scale = CGFloat(
+            usesFaceButtonResolution
+                ? frameRates.dynamicFaceButtonRenderScale
+                : frameRates.dynamicWallpaperRenderScale
+        )
+        if scale < 0.999 {
+            GeometryReader { geometry in
+                let fullSize = CGSize(
+                    width: max(1, geometry.size.width),
+                    height: max(1, geometry.size.height)
+                )
+                let rasterSize = CGSize(
+                    width: max(1, (fullSize.width * scale).rounded(.up)),
+                    height: max(1, (fullSize.height * scale).rounded(.up))
+                )
+
+                ZStack(alignment: .topLeading) {
+                    content
+                        .frame(width: fullSize.width, height: fullSize.height)
+                        .ignoresSafeArea()
+                        .scaleEffect(scale, anchor: .topLeading)
+                        .frame(
+                            width: rasterSize.width,
+                            height: rasterSize.height,
+                            alignment: .topLeading
+                        )
+                        .clipped()
+                        .drawingGroup(opaque: opaque, colorMode: .nonLinear)
+                        .scaleEffect(1 / scale, anchor: .topLeading)
+                }
+                .frame(
+                    width: fullSize.width,
+                    height: fullSize.height,
+                    alignment: .topLeading
+                )
+                .clipped()
+            }
+            // Match the direct full-quality path: reduced backing resolution
+            // must not reintroduce the safe-area proposal or shrink the scene.
+            .ignoresSafeArea()
+        } else {
+            content
+        }
+    }
+}
+
+extension View {
+    func dynamicWallpaperSwiftUIRenderSurface(
+        opaque: Bool = false,
+        usesFaceButtonResolution: Bool = false
+    ) -> some View {
+        modifier(
+            DynamicWallpaperSwiftUIRenderSurfaceModifier(
+                opaque: opaque,
+                usesFaceButtonResolution: usesFaceButtonResolution
+            )
+        )
+    }
+}
+
+/// A Canvas whose logical coordinate system remains screen-sized while its
+/// actual backing surface follows Live Wallpaper Resolution. This avoids the
+/// independent full-resolution Canvas allocation that can otherwise survive
+/// inside an outer drawing group.
+struct DynamicWallpaperCanvas: View {
+    var opaque = false
+    var colorMode: ColorRenderingMode = .nonLinear
+    var rendersAsynchronously = true
+    var usesWallpaperRenderScale = true
+    let renderer: (inout GraphicsContext, CGSize) -> Void
+
+    @Environment(\.uiFrameRateConfiguration) private var frameRates
+
+    init(
+        opaque: Bool = false,
+        colorMode: ColorRenderingMode = .nonLinear,
+        rendersAsynchronously: Bool = true,
+        usesWallpaperRenderScale: Bool = true,
+        renderer: @escaping (inout GraphicsContext, CGSize) -> Void
+    ) {
+        self.opaque = opaque
+        self.colorMode = colorMode
+        self.rendersAsynchronously = rendersAsynchronously
+        self.usesWallpaperRenderScale = usesWallpaperRenderScale
+        self.renderer = renderer
+    }
+
+    var body: some View {
+        GeometryReader { geometry in
+            let scale = CGFloat(
+                usesWallpaperRenderScale
+                    ? frameRates.dynamicWallpaperRenderScale
+                    : 1
+            )
+            let fullSize = CGSize(
+                width: max(1, geometry.size.width),
+                height: max(1, geometry.size.height)
+            )
+            let rasterSize = CGSize(
+                width: max(1, (fullSize.width * scale).rounded(.up)),
+                height: max(1, (fullSize.height * scale).rounded(.up))
+            )
+
+            Canvas(
+                opaque: opaque,
+                colorMode: colorMode,
+                rendersAsynchronously: rendersAsynchronously
+            ) { context, _ in
+                context.scaleBy(x: scale, y: scale)
+                renderer(&context, fullSize)
+            }
+            .frame(width: rasterSize.width, height: rasterSize.height)
+            .scaleEffect(1 / scale, anchor: .topLeading)
+            .frame(
+                width: fullSize.width,
+                height: fullSize.height,
+                alignment: .topLeading
+            )
+            .clipped()
+        }
+        .ignoresSafeArea()
+    }
+}
+
+struct DynamicBackgroundContentView: View {
+    let style: DynamicBackgroundStyle
+    let theme: DynamicBackgroundTheme
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    @ViewBuilder
+    var body: some View {
+        if reduceMotion {
+            StaticDynamicBackgroundView(theme: theme)
+        } else {
+            style.makeBackground(theme: theme)
+                .id(style.id)
+        }
+    }
+}
+
+private struct StaticDynamicBackgroundView: View {
+    let theme: DynamicBackgroundTheme
+
+    var body: some View {
+        let deep = theme.sharedColor(index: 0, time: 0)
+        let middle = theme.sharedColor(index: 1, time: 0)
+        let accent = theme.ribbonColor(index: 2, time: 0)
+        let gradient = theme.sharedGradientPoints(from: .topLeading, to: .bottomTrailing)
+
+        ZStack {
+            PaletteGradientField(
+                colors: [
+                    theme.paletteBackgroundColor(deep, darkness: 0.96),
+                    theme.paletteBackgroundColor(middle, darkness: 0.72),
+                    theme.paletteBackgroundColor(accent, darkness: 0.9),
+                    theme.paletteBackgroundColor(deep, darkness: 1),
+                ],
+                startPoint: gradient.start,
+                endPoint: gradient.end,
+                curvature: theme.sharedPaletteGradientCurvature
+            )
+
+            Circle()
+                .fill(accent.opacity(0.18))
+                .frame(width: 520, height: 520)
+                .blur(radius: 130)
+                .offset(x: 140, y: -90)
+        }
+        .ignoresSafeArea()
+    }
+}
+
+private extension DynamicBackgroundTheme {
+    init(preferences: DynamicAppearancePreferences) {
+        self.init(
+            sharedPalette: preferences.sharedPalette,
+            sharedCustomColor: preferences.sharedCustomColor,
+            sharedMultiColor: preferences.sharedMultiColor,
+            ribbonPalette: preferences.ribbonPalette,
+            ribbonCustomColor: preferences.ribbonCustomColor,
+            ribbonMultiColor: preferences.ribbonMultiColor,
+            particleSettings: preferences.particleSettings
+        )
+    }
+}
+
+extension View {
+    func glassSurface(
+        tint: Color? = nil,
+        interactive: Bool = false,
+        clear: Bool = false,
+        forceClear: Bool = false,
+        materializeTransition: Bool = false,
+        isEnabled: Bool = true,
+        cornerRadius: CGFloat,
+        cornerRadii: RectangleCornerRadii? = nil
+    ) -> some View {
+        modifier(
+            DynamicBackgroundGlassSurfaceModifier(
+                tint: tint,
+                interactive: interactive,
+                clear: clear,
+                forceClear: forceClear,
+                materializeTransition: materializeTransition,
+                isEnabled: isEnabled,
+                cornerRadius: cornerRadius,
+                cornerRadii: cornerRadii
+            )
+        )
+    }
+}
+
+private struct DynamicBackgroundGlassSurfaceModifier: ViewModifier {
+    @Environment(\.clearLiquidGlassUIEnabled) private var clearLiquidGlassUIEnabled
+    let tint: Color?
+    let interactive: Bool
+    let clear: Bool
+    let forceClear: Bool
+    let materializeTransition: Bool
+    let isEnabled: Bool
+    let cornerRadius: CGFloat
+    let cornerRadii: RectangleCornerRadii?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let cornerRadii {
+            surface(content, in: UnevenRoundedRectangle(cornerRadii: cornerRadii, style: .continuous))
+        } else {
+            surface(content, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        }
+    }
+
+    @ViewBuilder
+    private func surface(_ content: Content, in shape: some Shape) -> some View {
+        let usesClearGlass = clear && (forceClear || clearLiquidGlassUIEnabled)
+        if !isEnabled {
+            // Glass is a compositor effect, not layout, so offscreen lazy content
+            // keeps its card geometry without a live backdrop sampler.
+            content
+        } else if #available(iOS 26.0, *) {
+            let glass = usesClearGlass
+                ? Glass.clear
+                : Glass.regular
+            content
+                .glassEffect(
+                    glass.tint(tint).interactive(interactive),
+                    in: shape
+                )
+                .glassEffectTransition(
+                    materializeTransition ? .materialize : .identity
+                )
+                .controllerFocusDepthBehindGlass(
+                    cornerRadius: cornerRadius
+                )
+        } else {
+            let fallbackMaterial = usesClearGlass
+                ? AnyShapeStyle(.ultraThinMaterial)
+                : AnyShapeStyle(.regularMaterial)
+            if materializeTransition {
+                content
+                    .background(
+                        fallbackMaterial,
+                        in: shape
+                    )
+                    .transition(.opacity.combined(with: .scale(scale: 0.94)))
+                    .controllerFocusDepthBehindGlass(
+                        cornerRadius: cornerRadius
+                    )
+            } else {
+                content
+                    .background(
+                        fallbackMaterial,
+                        in: shape
+                    )
+                    .controllerFocusDepthBehindGlass(
+                        cornerRadius: cornerRadius
+                    )
+            }
+        }
+    }
+}

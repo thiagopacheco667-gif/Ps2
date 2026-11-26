@@ -1,0 +1,1346 @@
+// SPDX-FileCopyrightText: 2002-2026 PCSX2 Dev Team
+// SPDX-License-Identifier: GPL-3.0+
+
+// pcsx2-sdl — SDL3 frontend for kmsdrm-only handhelds.
+//
+// Boots a game from a CLI ISO path, or wires PCSX2's existing FullscreenUI
+// (ImGui) for in-game settings, game-picker, and configuration. With no ISO
+// supplied (and the "UI"/"StartBigPictureMode" flag set, which is on by
+// default for this frontend), comes up directly into the FullscreenUI
+// game-picker.
+//
+// Display surface is normally acquired via Vulkan VK_KHR_display, so no
+// Wayland/X11 compositor is needed — the Vulkan renderer enumerates monitors
+// itself and this frontend only reports the requested resolution back through
+// WindowInfo.
+//
+// When the frontend is instead launched inside a Wayland session (a compositor
+// owns the display, so VK_KHR_display can't take it — desktop, phone, or a
+// gamescope-style embedded compositor), we detect WAYLAND_DISPLAY at
+// window-build time, spin up an SDL3 SDL_WINDOW_VULKAN window, and hand its
+// wl_display / wl_surface to the Vulkan backend as a WindowInfo::Type::Wayland
+// surface. This path is compiled only when WAYLAND_API is enabled.
+//
+// Audio + input come from SDL3 via the existing SDLAudioStream / SDLInputSource
+// modules in the core (already linked, already non-Qt).
+
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <csignal>
+#include <cstdlib>
+#include <cstring>
+#include <deque>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <thread>
+#include <utility>
+#include <vector>
+
+#include <SDL3/SDL.h>
+
+#ifdef __linux__
+#include <drm/drm.h>
+#include <drm/drm_mode.h>
+#include <fcntl.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
+#endif
+
+#include "fmt/format.h"
+
+#include "common/Assertions.h"
+#include "common/Console.h"
+#include "common/CrashHandler.h"
+#include "common/Error.h"
+#include "common/FileSystem.h"
+#include "common/Path.h"
+#include "common/ProgressCallback.h"
+#include "common/StringUtil.h"
+#include "common/Threading.h"
+
+#include "pcsx2/PrecompiledHeader.h"
+
+#include "pcsx2/Achievements.h"
+#include "pcsx2/CDVD/CDVDcommon.h"
+#include "pcsx2/Catalog/DriverPacks.h"
+#include "pcsx2/GS.h"
+#include "pcsx2/GS/Renderers/Common/GSHeadlessPresent.h"
+#include "pcsx2/GameList.h"
+#include "pcsx2/Host.h"
+#include "pcsx2/IopThread/OwnerAsserts.h"
+#include "pcsx2/INISettingsInterface.h"
+#include "pcsx2/ImGui/FullscreenUI.h"
+#include "pcsx2/ImGui/ImGuiFullscreen.h"
+#include "pcsx2/ImGui/ImGuiManager.h"
+#include "pcsx2/Input/InputManager.h"
+#include "pcsx2/MTGS.h"
+#include "pcsx2/PerformanceMetrics.h"
+#include "pcsx2/SIO/Pad/Pad.h"
+#include "pcsx2/VMManager.h"
+#ifdef ENABLE_OPENGL
+#include "pcsx2/GS/Renderers/OpenGL/GLContext.h"
+#endif
+
+#include "svnrev.h"
+
+namespace Pcsx2SDL
+{
+	static bool InitializeConfig();
+	static bool ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& params);
+	static void InstallSignalHandler();
+	static std::optional<WindowInfo> BuildWindowInfo();
+	static void CPUThreadMain(VMBootParameters initial_params, bool start_in_fsui, std::atomic<int>* ret);
+	static void DrainCPUThreadQueue();
+	static void StopGameListRefreshThread();
+} // namespace Pcsx2SDL
+
+// Settings persistence (INI on disk).
+static std::unique_ptr<INISettingsInterface> s_base_settings;
+static std::unique_ptr<INISettingsInterface> s_secrets_settings;
+
+// Shutdown signal from SIGTERM/SIGINT or VM exit.
+static std::atomic<bool> s_shutdown_requested{false};
+
+// Display mode requested via --fullscreen-mode (0 = let the renderer pick the
+// display's preferred mode).
+static u32 s_requested_width = 0;
+static u32 s_requested_height = 0;
+
+// --headless WxH: no display and no SDL video. The GS gets a Surfaceless window of this size and
+// presents into an offscreen texture (GSHeadlessPresent.h); PINE's UIScreenshot reads it back.
+static bool s_headless = false;
+static u32 s_headless_width = 0;
+static u32 s_headless_height = 0;
+
+// -bigpicture: with no ISO, start in Big Picture even if UI/StartBigPictureMode was turned off.
+static bool s_force_bigpicture = false;
+
+// Wayland fallback window. Created lazily by BuildWindowInfo() the first time a
+// render window is requested, but only when running under a Wayland compositor
+// (WAYLAND_DISPLAY set) — on a bare kmsdrm handheld this stays null and the
+// VK_KHR_display (VulkanDirect) path is used instead. Owned by this frontend;
+// destroyed in main() after the CPU thread joins.
+#if defined(WAYLAND_API)
+static SDL_Window* s_wayland_window = nullptr;
+static bool s_wayland_probed = false;
+#endif
+
+// Pending CPU-thread callbacks queued by Host::RunOnCPUThread (FullscreenUI
+// uses this to schedule work back from the GS thread, e.g. "user picked an
+// ISO from the game list, please VMManager::Initialize it on the CPU thread").
+// Drained by Host::PumpMessagesOnCPUThread which the VM polls every vsync;
+// also drained on a 16ms tick by the idle loop while no VM is running.
+static std::mutex s_cpu_queue_lock;
+static std::deque<std::function<void()>> s_cpu_queue;
+static std::condition_variable s_cpu_queue_cv;
+// Set once the CPU thread is up; used to detect "RunOnCPUThread(block=true)"
+// being called from the CPU thread itself (which would self-deadlock).
+static std::atomic<std::thread::id> s_cpu_thread_id{};
+
+// Background game-list scanner. The CPU thread starts one at launch, and Big
+// Picture's refresh buttons start more from the GS thread through
+// Host::RefreshGameListAsync.
+//
+// GameList::Refresh holds the CDVD lock for the whole scan, and
+// VMManager::Initialize fails if it cannot take that lock, so no scan may be
+// running when a game boots. Initialize calls Host::CancelGameListRefresh
+// first: that sets s_gamelist_cancel, which the scan polls between files, and
+// waits for the thread to end. It also blocks new scans until
+// Host::OnVMDestroyed, because the VM holds the lock from then on.
+//
+// RefreshGameListAsync never waits for the scan thread. Big Picture calls it
+// with the GameList lock held and the scan thread needs that lock to add
+// entries, so a wait there would deadlock. A request made during a scan
+// cancels it, and the scan thread runs the new one when it has ended.
+static std::mutex s_gamelist_lock; // guards everything below except s_gamelist_cancel
+static std::condition_variable s_gamelist_idle_cv;
+static std::thread s_gamelist_thread;
+static bool s_gamelist_scanning = false; // the scan thread has not finished
+static bool s_gamelist_rescan = false; // a request arrived during the scan
+static bool s_gamelist_rescan_invalidate = false;
+static bool s_gamelist_blocked = false; // a game is booting or running, or we are exiting
+static bool s_gamelist_rescan_after_vm = false; // a scan was cut short or refused while blocked
+static std::atomic<bool> s_gamelist_cancel{false};
+
+//////////////////////////////////////////////////////////////////////////
+// Settings + lifecycle
+//////////////////////////////////////////////////////////////////////////
+
+bool Pcsx2SDL::InitializeConfig()
+{
+	EmuFolders::SetAppRoot();
+	if (!EmuFolders::SetResourcesDirectory() || !EmuFolders::SetDataDirectory(nullptr))
+		return false;
+
+	CrashHandler::SetWriteDirectory(EmuFolders::DataRoot);
+
+	const char* hw_check_error = nullptr;
+	if (!VMManager::PerformEarlyHardwareChecks(&hw_check_error))
+	{
+		Console.ErrorFmt("Early hardware check failed: {}", hw_check_error ? hw_check_error : "unknown");
+		return false;
+	}
+
+	// Load Roboto for OSD / FullscreenUI (font is bundled in resources).
+	{
+		const std::string roboto_path =
+			EmuFolders::GetOverridableResourcePath("fonts" FS_OSPATH_SEPARATOR_STR "Roboto-Regular.ttf");
+		const auto roboto_data = FileSystem::MapBinaryFileForRead(roboto_path.c_str());
+		if (roboto_data.empty())
+		{
+			Console.ErrorFmt("Failed to load font file '{}'.", roboto_path);
+			return false;
+		}
+
+		std::vector<ImGuiManager::FontInfo> fonts;
+		ImGuiManager::FontInfo fi{};
+		fi.data = roboto_data;
+		fi.exclude_ranges = {};
+		fi.face_name = nullptr;
+		fi.is_emoji_font = false;
+		fonts.push_back(fi);
+		ImGuiManager::SetFonts(std::move(fonts));
+	}
+
+	// Open / create the persistent INI at $XDG_CONFIG_HOME/PCSX2/PCSX2.ini.
+	const std::string ini_path = Path::Combine(EmuFolders::Settings, "PCSX2.ini");
+	const bool ini_exists = FileSystem::FileExists(ini_path.c_str());
+	Console.WriteLnFmt("Loading config from {}.", ini_path);
+
+	s_base_settings = std::make_unique<INISettingsInterface>(ini_path);
+	Host::Internal::SetBaseSettingsLayer(s_base_settings.get());
+
+	if (!ini_exists || !s_base_settings->Load() || !VMManager::Internal::CheckSettingsVersion())
+	{
+		Console.WriteLnFmt("Initialising fresh config at {}.", ini_path);
+		VMManager::SetDefaultSettings(*s_base_settings, true, true, true, true, true);
+	}
+
+	// A file from before a default changed is moved to the new default once; the Save below writes it. A file just
+	// made by SetDefaultSettings() is already marked.
+	VMManager::Internal::MigrateSettings(*s_base_settings);
+
+	// Secrets layer (achievements credentials etc). Created on first run;
+	// failure to create is non-fatal — just log and continue.
+	const std::string secrets_path = Path::Combine(EmuFolders::Settings, "secrets.ini");
+	s_secrets_settings = std::make_unique<INISettingsInterface>(secrets_path);
+	Host::Internal::SetSecretsSettingsLayer(s_secrets_settings.get());
+	if (FileSystem::FileExists(secrets_path.c_str()))
+		s_secrets_settings->Load();
+
+	// Apply handheld-frontend defaults. These override anything the INI
+	// might have for fields that don't make sense without a desktop:
+	//  - Vulkan renderer (only one with VK_KHR_display direct-display path).
+	//  - Fullscreen always (no window manager to support windowed mode).
+	//  - SDL audio + SDL gamepad input (no Qt-coupled keyboard input layer).
+	{
+		auto lock = Host::GetSettingsLock();
+		s_base_settings->SetBoolValue("InputSources", "SDL", true);
+		// Don't disable user-set values they may have customised — only fill
+		// in missing defaults for first-run.
+		if (!s_base_settings->ContainsValue("EmuCore/GS", "Renderer"))
+			s_base_settings->SetIntValue("EmuCore/GS", "Renderer",
+				static_cast<int>(GSRendererType::VK));
+		if (!s_base_settings->ContainsValue("SPU2/Output", "OutputModule"))
+			s_base_settings->SetStringValue("SPU2/Output", "OutputModule", "sdl");
+		if (!s_base_settings->ContainsValue("EmuCore/GS", "FullscreenMode"))
+			s_base_settings->SetBoolValue("EmuCore/GS", "FullscreenMode", true);
+	}
+
+	// Persist any first-run defaults so the user can hand-edit
+	// the INI between sessions.
+	Error save_error;
+	if (!s_base_settings->Save(&save_error))
+		Console.ErrorFmt("Failed to save config: {}", save_error.GetDescription());
+
+	VMManager::Internal::LoadStartupSettings();
+	return true;
+}
+
+bool Pcsx2SDL::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& params)
+{
+	for (int i = 1; i < argc; i++)
+	{
+#define ARG(s) (!std::strcmp(argv[i], s))
+#define ARG_PARAM(s) (!std::strcmp(argv[i], s) && (i + 1) < argc)
+
+		if (ARG("--help") || ARG("-h"))
+		{
+			std::fprintf(stderr, "PCSX2 SDL frontend %s\n", GIT_REV);
+			std::fprintf(stderr, "Usage: %s [options] <iso-path>\n\n", argv[0]);
+			std::fprintf(stderr, "  --fullscreen-mode WxH    Request a specific display mode\n");
+			std::fprintf(stderr, "                           (default: monitor's preferred mode)\n");
+			std::fprintf(stderr, "  --headless WxH           No display: render to an offscreen WxH image (for PINE UIScreenshot)\n");
+			std::fprintf(stderr, "  -bigpicture              Start in Big Picture when no disc is given\n");
+			std::fprintf(stderr, "  --bios-only              Boot the BIOS without loading a disc\n");
+			std::fprintf(stderr, "  --state-from-file PATH   Resume from a save state file\n");
+			std::fprintf(stderr, "  --no-fast-boot           Skip fast boot (run full BIOS animation)\n");
+			std::fprintf(stderr, "  -h, --help               Show this help and exit\n");
+			std::fprintf(stderr, "  --version                Show version and exit\n");
+			return false;
+		}
+		if (ARG("--version"))
+		{
+			std::fprintf(stderr, "PCSX2 SDL frontend %s\n", GIT_REV);
+			return false;
+		}
+		if (ARG_PARAM("--fullscreen-mode"))
+		{
+			const char* mode = argv[++i];
+			const char* x_pos = std::strchr(mode, 'x');
+			if (!x_pos)
+			{
+				std::fprintf(stderr, "Invalid --fullscreen-mode '%s', expected WxH (e.g. 1280x720).\n", mode);
+				return false;
+			}
+			s_requested_width = StringUtil::FromChars<u32>(std::string_view(mode, x_pos - mode)).value_or(0);
+			s_requested_height = StringUtil::FromChars<u32>(x_pos + 1).value_or(0);
+			if (s_requested_width == 0 || s_requested_height == 0)
+			{
+				std::fprintf(stderr, "Invalid --fullscreen-mode '%s'.\n", mode);
+				return false;
+			}
+			continue;
+		}
+		if (ARG_PARAM("--headless"))
+		{
+			const char* mode = argv[++i];
+			const char* x_pos = std::strchr(mode, 'x');
+			s_headless_width = x_pos ? StringUtil::FromChars<u32>(std::string_view(mode, x_pos - mode)).value_or(0) : 0;
+			s_headless_height = x_pos ? StringUtil::FromChars<u32>(x_pos + 1).value_or(0) : 0;
+			if (s_headless_width < 64 || s_headless_height < 64 || s_headless_width > 8192 || s_headless_height > 8192)
+			{
+				std::fprintf(stderr, "Invalid --headless '%s', expected WxH between 64x64 and 8192x8192 (e.g. 1280x720).\n", mode);
+				return false;
+			}
+			s_headless = true;
+			continue;
+		}
+		if (ARG("-bigpicture"))
+		{
+			s_force_bigpicture = true;
+			continue;
+		}
+		if (ARG("--bios-only"))
+		{
+			params.source_type = CDVD_SourceType::NoDisc;
+			continue;
+		}
+		if (ARG_PARAM("--state-from-file"))
+		{
+			params.save_state = argv[++i];
+			continue;
+		}
+		if (ARG("--no-fast-boot"))
+		{
+			params.fast_boot = false;
+			continue;
+		}
+		if (argv[i][0] == '-')
+		{
+			// Of the Qt frontend's flags only -bigpicture is taken (no -fullscreen, -nogui, -batch
+			// or -fastboot): fullscreen is always on, and with no ISO it starts in Big Picture.
+			std::fprintf(stderr, "Unknown argument: '%s'\nRun with --help for the accepted options.\n", argv[i]);
+			return false;
+		}
+
+		// Positional: ISO path.
+		if (!params.filename.empty())
+		{
+			std::fprintf(stderr, "Multiple ISO paths supplied; expected exactly one.\n");
+			return false;
+		}
+		params.filename = argv[i];
+
+#undef ARG
+#undef ARG_PARAM
+	}
+
+	// Empty positional + no --bios-only is allowed: the frontend boots into
+	// FullscreenUI's game-picker if "UI/StartBigPictureMode" is set
+	// (the default for this frontend; see Host::SetDefaultUISettings).
+	// The decision happens in main() after settings are loaded.
+
+	if (!params.fast_boot.has_value())
+		params.fast_boot = true;
+	if (!params.fullscreen.has_value())
+		params.fullscreen = true;
+
+	return true;
+}
+
+static void HandleSignal(int)
+{
+	s_shutdown_requested.store(true, std::memory_order_release);
+	if (VMManager::HasValidVM())
+		VMManager::SetState(VMState::Stopping);
+}
+
+void Pcsx2SDL::InstallSignalHandler()
+{
+	std::signal(SIGTERM, &HandleSignal);
+	std::signal(SIGINT, &HandleSignal);
+	std::signal(SIGHUP, &HandleSignal);
+}
+
+#ifdef __linux__
+// The turn a connected connector's "panel orientation" property asks for, in WindowInfo::surface_rotation's
+// units (clockwise quarter turns of the picture). 0 when the property is absent or "Normal". nullopt when the
+// connector is not connected.
+static std::optional<u8> ReadConnectorPanelRotation(int fd, u32 connector_id)
+{
+	// A non-zero mode count keeps the kernel from probing the connector again.
+	drm_mode_modeinfo mode = {};
+	drm_mode_get_connector conn = {};
+	conn.connector_id = connector_id;
+	conn.modes_ptr = reinterpret_cast<uintptr_t>(&mode);
+	conn.count_modes = 1;
+	constexpr u32 DRM_MODE_CONNECTED = 1;
+	if (ioctl(fd, DRM_IOCTL_MODE_GETCONNECTOR, &conn) != 0 || conn.connection != DRM_MODE_CONNECTED)
+		return std::nullopt;
+
+	drm_mode_obj_get_properties props = {};
+	props.obj_id = connector_id;
+	props.obj_type = DRM_MODE_OBJECT_CONNECTOR;
+	if (ioctl(fd, DRM_IOCTL_MODE_OBJ_GETPROPERTIES, &props) != 0)
+		return 0;
+	std::vector<u32> ids(props.count_props);
+	std::vector<u64> values(props.count_props);
+	props.props_ptr = reinterpret_cast<uintptr_t>(ids.data());
+	props.prop_values_ptr = reinterpret_cast<uintptr_t>(values.data());
+	if (ioctl(fd, DRM_IOCTL_MODE_OBJ_GETPROPERTIES, &props) != 0)
+		return 0;
+
+	for (size_t i = 0; i < std::min<size_t>(ids.size(), props.count_props); i++)
+	{
+		drm_mode_get_property prop = {};
+		prop.prop_id = ids[i];
+		if (ioctl(fd, DRM_IOCTL_MODE_GETPROPERTY, &prop) != 0 || std::strcmp(prop.name, "panel orientation") != 0)
+			continue;
+
+		std::vector<drm_mode_property_enum> enums(prop.count_enum_blobs);
+		prop.enum_blob_ptr = reinterpret_cast<uintptr_t>(enums.data());
+		prop.count_values = 0;
+		if (ioctl(fd, DRM_IOCTL_MODE_GETPROPERTY, &prop) != 0)
+			return 0;
+
+		// The names are the interface (drm_connector.c). "Left Side Up": the panel's left edge is at the top of
+		// the case, so the picture turns a quarter counter-clockwise on it.
+		for (size_t e = 0; e < std::min<size_t>(enums.size(), prop.count_enum_blobs); e++)
+		{
+			if (enums[e].value != values[i])
+				continue;
+			const std::string_view name(enums[e].name);
+			Console.WriteLnFmt("DRM: connector {} panel orientation is \"{}\".", connector_id, name);
+			if (name == "Right Side Up")
+				return 1;
+			if (name == "Upside Down")
+				return 2;
+			if (name == "Left Side Up")
+				return 3;
+			return 0;
+		}
+		return 0;
+	}
+	return 0;
+}
+
+// How the display panel is mounted, read from the first connected DRM connector: the display Mesa's
+// VK_KHR_display lists first, which is the one the renderer picks. The kernel takes the orientation from
+// the device tree or its quirk table. A handheld with a portrait panel in a landscape case, such as the
+// Retroid Pocket Flip 2, reports one; with nothing to turn the picture for us on bare KMS, the renderer
+// pre-rotates it.
+static u8 ReadDRMPanelRotation()
+{
+	for (int card = 0; card < 16; card++)
+	{
+		const std::string path = fmt::format("/dev/dri/card{}", card);
+		const int fd = open(path.c_str(), O_RDWR | O_CLOEXEC);
+		if (fd < 0)
+			continue;
+
+		std::optional<u8> rotation;
+		drm_mode_card_res res = {};
+		if (ioctl(fd, DRM_IOCTL_MODE_GETRESOURCES, &res) == 0 && res.count_connectors > 0)
+		{
+			std::vector<u32> connectors(res.count_connectors);
+			res = {};
+			res.connector_id_ptr = reinterpret_cast<uintptr_t>(connectors.data());
+			res.count_connectors = static_cast<u32>(connectors.size());
+			if (ioctl(fd, DRM_IOCTL_MODE_GETRESOURCES, &res) == 0)
+			{
+				for (size_t i = 0; i < std::min<size_t>(connectors.size(), res.count_connectors) && !rotation; i++)
+					rotation = ReadConnectorPanelRotation(fd, connectors[i]);
+			}
+		}
+		close(fd);
+
+		if (rotation.has_value())
+			return rotation.value();
+	}
+	return 0;
+}
+#endif
+
+#if defined(WAYLAND_API)
+// True when a Wayland compositor is present. On a bare kmsdrm handheld there is
+// no WAYLAND_DISPLAY and VK_KHR_display (VulkanDirect) is the correct path, so
+// we must not create an SDL window there (doing so would also fight the ICD for
+// the DRM master).
+static bool WaylandSessionPresent()
+{
+	const char* wl = std::getenv("WAYLAND_DISPLAY");
+	return wl && *wl;
+}
+
+// Bring up an SDL3 Vulkan window on the Wayland compositor and populate `wi`
+// with its wl_display / wl_surface. Returns false (and leaves s_wayland_window
+// null) if anything fails, so the caller falls back to VulkanDirect.
+static bool BuildWaylandWindowInfo(WindowInfo& wi)
+{
+	if (!s_wayland_probed)
+	{
+		s_wayland_probed = true;
+
+		// Prefer the Wayland video driver explicitly; if SDL comes up on
+		// something else (e.g. Xwayland via x11), the handles below won't match
+		// Type::Wayland, so we bail and let VulkanDirect take over.
+		SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "wayland");
+		if (!SDL_InitSubSystem(SDL_INIT_VIDEO))
+		{
+			Console.WarningFmt("Wayland fallback: SDL_INIT_VIDEO failed ({}); using VK_KHR_display.",
+				SDL_GetError());
+			return false;
+		}
+
+		const char* driver = SDL_GetCurrentVideoDriver();
+		if (!driver || std::strcmp(driver, "wayland") != 0)
+		{
+			Console.WarningFmt("Wayland fallback: SDL video driver is '{}', not wayland; using VK_KHR_display.",
+				driver ? driver : "<none>");
+			SDL_QuitSubSystem(SDL_INIT_VIDEO);
+			return false;
+		}
+
+		// Fullscreen borderless — the compositor sizes us to the output. A
+		// requested mode only seeds the initial (windowed) size; fullscreen
+		// overrides it.
+		const int win_w = s_requested_width != 0 ? static_cast<int>(s_requested_width) : 1280;
+		const int win_h = s_requested_height != 0 ? static_cast<int>(s_requested_height) : 720;
+		s_wayland_window = SDL_CreateWindow("ARMSX2", win_w, win_h,
+			SDL_WINDOW_VULKAN | SDL_WINDOW_FULLSCREEN);
+		if (!s_wayland_window)
+		{
+			Console.WarningFmt("Wayland fallback: SDL_CreateWindow failed ({}); using VK_KHR_display.",
+				SDL_GetError());
+			SDL_QuitSubSystem(SDL_INIT_VIDEO);
+			return false;
+		}
+	}
+
+	if (!s_wayland_window)
+		return false;
+
+	const SDL_PropertiesID props = SDL_GetWindowProperties(s_wayland_window);
+	void* wl_display = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WAYLAND_DISPLAY_POINTER, nullptr);
+	void* wl_surface = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WAYLAND_SURFACE_POINTER, nullptr);
+	if (!wl_display || !wl_surface)
+	{
+		Console.Warning("Wayland fallback: SDL window exposed no wl_display/wl_surface; using VK_KHR_display.");
+		return false;
+	}
+
+	int px_w = 0, px_h = 0;
+	SDL_GetWindowSizeInPixels(s_wayland_window, &px_w, &px_h);
+
+	wi.type = WindowInfo::Type::Wayland;
+	wi.display_connection = wl_display;
+	wi.window_handle = wl_surface;
+	wi.surface_handle = nullptr;
+	wi.surface_width = px_w > 0 ? static_cast<u32>(px_w) : s_requested_width;
+	wi.surface_height = px_h > 0 ? static_cast<u32>(px_h) : s_requested_height;
+	wi.surface_scale = SDL_GetWindowPixelDensity(s_wayland_window);
+	if (wi.surface_scale <= 0.0f)
+		wi.surface_scale = 1.0f;
+	return true;
+}
+#endif
+
+std::optional<WindowInfo> Pcsx2SDL::BuildWindowInfo()
+{
+	if (s_headless)
+	{
+		// Surfaceless: the GS draws every present into an offscreen texture of this size instead
+		// of a swapchain image, so there is no SDL video, compositor or DRM master. The refresh
+		// rate only paces the no-game idle present.
+		WindowInfo wi;
+		wi.type = WindowInfo::Type::Surfaceless;
+		wi.surface_width = s_headless_width;
+		wi.surface_height = s_headless_height;
+		wi.surface_scale = 1.0f;
+		wi.surface_refresh_rate = GSHeadless::kFrameRate;
+		return wi;
+	}
+
+#if defined(WAYLAND_API)
+	if (WaylandSessionPresent())
+	{
+		WindowInfo wl_wi;
+		if (BuildWaylandWindowInfo(wl_wi))
+			return wl_wi;
+		// Fell through: no usable Wayland surface — try VK_KHR_display below.
+	}
+#endif
+
+	WindowInfo wi;
+	wi.type = WindowInfo::Type::VulkanDirect;
+	wi.surface_width = s_requested_width;
+	wi.surface_height = s_requested_height;
+	wi.surface_scale = 1.0f;
+	wi.display_connection = nullptr;
+	wi.window_handle = nullptr;
+	wi.surface_handle = nullptr;
+#ifdef __linux__
+	wi.surface_rotation = ReadDRMPanelRotation();
+#endif
+	return wi;
+}
+
+//////////////////////////////////////////////////////////////////////////
+// Host:: callbacks
+//////////////////////////////////////////////////////////////////////////
+
+void Host::CommitBaseSettingChanges()
+{
+	if (!s_base_settings)
+		return;
+	Error err;
+	if (!s_base_settings->Save(&err))
+		Console.ErrorFmt("Failed to save settings: {}", err.GetDescription());
+}
+
+void Host::LoadSettings(SettingsInterface& si, std::unique_lock<std::mutex>& lock)
+{
+	// No host-specific settings layer to merge in — everything lives in the
+	// base INI.
+}
+
+void Host::CheckForSettingsChanges(const Pcsx2Config& old_config)
+{
+}
+
+bool Host::RequestResetSettings(bool folders, bool core, bool controllers, bool hotkeys, bool ui)
+{
+	// FullscreenUI will trigger this; no UI is wired to drive it yet.
+	return false;
+}
+
+void Host::SetDefaultUISettings(SettingsInterface& si)
+{
+	// Handheld defaults — start straight into FullscreenUI when no game is
+	// loaded, hide pointer (no mouse), confirm via cross/A button.
+	si.SetBoolValue("UI", "StartBigPictureMode", true);
+}
+
+bool Host::LocaleCircleConfirm()
+{
+	return false;
+}
+
+std::unique_ptr<ProgressCallback> Host::CreateHostProgressCallback()
+{
+	return ProgressCallback::CreateNullProgressCallback();
+}
+
+void Host::ReportInfoAsync(const std::string_view title, const std::string_view message)
+{
+	if (!title.empty() && !message.empty())
+		INFO_LOG("{}: {}", title, message);
+	else if (!message.empty())
+		INFO_LOG("{}", message);
+}
+
+void Host::ReportErrorAsync(const std::string_view title, const std::string_view message)
+{
+	if (!title.empty() && !message.empty())
+		ERROR_LOG("{}: {}", title, message);
+	else if (!message.empty())
+		ERROR_LOG("{}", message);
+}
+
+void Host::OpenURL(const std::string_view url)
+{
+}
+
+bool Host::CopyTextToClipboard(const std::string_view text)
+{
+	return false;
+}
+
+std::string Host::GetTextFromClipboard()
+{
+	return std::string();
+}
+
+void Host::BeginTextInput()
+{
+}
+
+void Host::EndTextInput()
+{
+}
+
+std::optional<WindowInfo> Host::GetTopLevelWindowInfo()
+{
+	return Pcsx2SDL::BuildWindowInfo();
+}
+
+void Host::OnInputDeviceConnected(const std::string_view identifier, const std::string_view device_name)
+{
+	INFO_LOG("Input device connected: {} ({})", identifier, device_name);
+}
+
+void Host::OnInputDeviceDisconnected(const InputBindingKey key, const std::string_view identifier)
+{
+	INFO_LOG("Input device disconnected: {}", identifier);
+}
+
+void Host::SetMouseMode(bool relative_mode, bool hide_cursor)
+{
+}
+
+void Host::SetMouseLock(bool state)
+{
+}
+
+std::optional<WindowInfo> Host::AcquireRenderWindow(bool recreate_window)
+{
+	return Pcsx2SDL::BuildWindowInfo();
+}
+
+void Host::ReleaseRenderWindow()
+{
+}
+
+void Host::BeginPresentFrame()
+{
+}
+
+void Host::RequestResizeHostDisplay(s32 width, s32 height)
+{
+	// VK_KHR_display provides a fixed mode for the lifetime of the surface;
+	// resize requests from the core are advisory only.
+}
+
+void Host::OnVMStarting()
+{
+}
+
+void Host::OnVMStarted()
+{
+}
+
+void Host::OnVMDestroyed()
+{
+	// The CDVD lock is free again. Redo a scan that the game start cut short, so Big Picture does not come back to a
+	// partial list.
+	bool rescan;
+	{
+		std::lock_guard<std::mutex> lock(s_gamelist_lock);
+		s_gamelist_blocked = false;
+		rescan = std::exchange(s_gamelist_rescan_after_vm, false);
+	}
+
+	if (rescan && !s_shutdown_requested.load(std::memory_order_acquire))
+		Host::RefreshGameListAsync(false);
+}
+
+void Host::OnVMPaused()
+{
+}
+
+void Host::OnVMResumed()
+{
+}
+
+void Host::OnGameChanged(const std::string& title, const std::string& elf_override, const std::string& disc_path,
+	const std::string& disc_serial, u32 disc_crc, u32 current_crc)
+{
+	if (!title.empty())
+		INFO_LOG("Game changed: {} (serial {}, CRC {:08X})", title, disc_serial, current_crc);
+}
+
+void Host::OnPerformanceMetricsUpdated()
+{
+}
+
+void Host::OnSaveStateLoading(const std::string_view filename)
+{
+}
+
+void Host::OnSaveStateLoaded(const std::string_view filename, bool was_successful)
+{
+}
+
+void Host::OnSaveStateSaved(const std::string_view filename)
+{
+}
+
+void Pcsx2SDL::DrainCPUThreadQueue()
+{
+	for (;;)
+	{
+		std::function<void()> fn;
+		{
+			std::lock_guard<std::mutex> lock(s_cpu_queue_lock);
+			if (s_cpu_queue.empty())
+				return;
+			fn = std::move(s_cpu_queue.front());
+			s_cpu_queue.pop_front();
+		}
+		fn();
+	}
+}
+
+void Host::PumpMessagesOnCPUThread()
+{
+	// Honour SIGTERM / SIGINT picked up by the signal handler.
+	if (s_shutdown_requested.load(std::memory_order_acquire) && VMManager::HasValidVM())
+		VMManager::SetState(VMState::Stopping);
+
+	Pcsx2SDL::DrainCPUThreadQueue();
+}
+
+void Host::RunOnCPUThread(std::function<void()> function, bool block)
+{
+	BLOCKING_HOST_CALL_ASSERT(block);
+	if (block)
+	{
+		// Inline if already on the CPU thread to avoid self-deadlock.
+		if (s_cpu_thread_id.load(std::memory_order_acquire) == std::this_thread::get_id())
+		{
+			function();
+			return;
+		}
+
+		std::mutex done_lock;
+		std::condition_variable done_cv;
+		bool done = false;
+		auto wrapped = [&function, &done_lock, &done_cv, &done]() {
+			function();
+			std::lock_guard<std::mutex> lk(done_lock);
+			done = true;
+			done_cv.notify_all();
+		};
+		{
+			std::lock_guard<std::mutex> lock(s_cpu_queue_lock);
+			s_cpu_queue.emplace_back(std::move(wrapped));
+		}
+		s_cpu_queue_cv.notify_all();
+		std::unique_lock<std::mutex> lk(done_lock);
+		done_cv.wait(lk, [&done]() { return done; });
+		return;
+	}
+
+	{
+		std::lock_guard<std::mutex> lock(s_cpu_queue_lock);
+		s_cpu_queue.emplace_back(std::move(function));
+	}
+	s_cpu_queue_cv.notify_all();
+}
+
+namespace
+{
+	// GameList::Refresh and FileSystem::FindFiles poll IsCancelled(). Nothing reads the progress.
+	class GameListScanProgress final : public BaseProgressCallback
+	{
+	public:
+		bool IsCancelled() const override { return s_gamelist_cancel.load(std::memory_order_acquire); }
+
+		void SetTitle(const char* title) override {}
+
+		void DisplayError(const char* message) override { Console.Error("%s", message); }
+		void DisplayWarning(const char* message) override { Console.Warning("%s", message); }
+		void DisplayInformation(const char* message) override { Console.WriteLn("%s", message); }
+		void DisplayDebugMessage(const char* message) override { DevCon.WriteLn("%s", message); }
+
+		void ModalError(const char* message) override { Console.Error("%s", message); }
+		bool ModalConfirmation(const char* message) override
+		{
+			Console.WriteLn("%s", message);
+			return false;
+		}
+		void ModalInformation(const char* message) override { Console.WriteLn("%s", message); }
+	};
+} // namespace
+
+static void GameListScanThreadMain(bool invalidate_cache)
+{
+	Threading::SetNameOfCurrentThread("GameList Refresh");
+
+	GameListScanProgress progress;
+	for (;;)
+	{
+		GameList::Refresh(invalidate_cache, false, &progress);
+
+		std::lock_guard<std::mutex> lock(s_gamelist_lock);
+		if (!s_gamelist_rescan)
+		{
+			s_gamelist_scanning = false;
+			s_gamelist_idle_cv.notify_all();
+			return;
+		}
+
+		invalidate_cache = s_gamelist_rescan_invalidate;
+		s_gamelist_rescan = false;
+		s_gamelist_rescan_invalidate = false;
+		s_gamelist_cancel.store(false, std::memory_order_release);
+	}
+}
+
+// Cancels the running scan, drops any queued one, and waits for the thread to end. That takes as long as the scan
+// needs to finish the file it is on. Scans stay blocked afterwards: the caller is a game boot (the VM then holds the
+// CDVD lock until Host::OnVMDestroyed) or the frontend exiting.
+void Pcsx2SDL::StopGameListRefreshThread()
+{
+	std::unique_lock<std::mutex> lock(s_gamelist_lock);
+
+	s_gamelist_blocked = true;
+	s_gamelist_rescan = false;
+	s_gamelist_rescan_invalidate = false;
+	if (s_gamelist_scanning)
+	{
+		// The list is left partial: Host::OnVMDestroyed redoes the scan, which is incremental through the cache.
+		s_gamelist_rescan_after_vm = true;
+		s_gamelist_cancel.store(true, std::memory_order_release);
+	}
+
+	s_gamelist_idle_cv.wait(lock, []() { return !s_gamelist_scanning; });
+	if (s_gamelist_thread.joinable())
+		s_gamelist_thread.join();
+}
+
+void Host::RefreshGameListAsync(bool invalidate_cache)
+{
+	std::lock_guard<std::mutex> lock(s_gamelist_lock);
+
+	if (s_gamelist_blocked)
+	{
+		// The scan would fail on the CDVD lock. Do it when the VM is gone.
+		s_gamelist_rescan_after_vm = true;
+		return;
+	}
+
+	if (s_gamelist_scanning)
+	{
+		s_gamelist_rescan = true;
+		s_gamelist_rescan_invalidate |= invalidate_cache;
+		s_gamelist_cancel.store(true, std::memory_order_release);
+		return;
+	}
+
+	// The previous scan thread has finished, or is about to return without taking the lock again.
+	if (s_gamelist_thread.joinable())
+		s_gamelist_thread.join();
+
+	s_gamelist_cancel.store(false, std::memory_order_release);
+	s_gamelist_scanning = true;
+	s_gamelist_thread = std::thread(GameListScanThreadMain, invalidate_cache);
+}
+
+void Host::CancelGameListRefresh()
+{
+	Pcsx2SDL::StopGameListRefreshThread();
+}
+
+bool Host::IsFullscreen()
+{
+	return true;
+}
+
+void Host::SetFullscreen(bool enabled)
+{
+	// No-op: VK_KHR_display is always fullscreen; there's no compositor to
+	// host a windowed mode.
+}
+
+void Host::RequestExitApplication(bool allow_confirm)
+{
+	s_shutdown_requested.store(true, std::memory_order_release);
+	if (VMManager::HasValidVM())
+		VMManager::SetState(VMState::Stopping);
+}
+
+void Host::RequestExitBigPicture()
+{
+	// FullscreenUI exit — shut down the application.
+	Host::RequestExitApplication(false);
+}
+
+void Host::RequestVMShutdown(bool allow_confirm, bool allow_save_state, bool default_save_state)
+{
+	VMManager::SetState(VMState::Stopping);
+}
+
+void Host::OnAchievementsLoginSuccess(const char* username, u32 points, u32 sc_points, u32 unread_messages)
+{
+}
+
+void Host::OnAchievementsLoginRequested(Achievements::LoginRequestReason reason)
+{
+}
+
+void Host::OnAchievementsHardcoreModeChanged(bool enabled)
+{
+}
+
+bool Host::HasNativeAchievementNotifications() { return false; }
+void Host::OnAchievementNotification(const char*, float, const char*, const char*, const char*) {}
+
+void Host::OnAchievementsRefreshed()
+{
+}
+
+void Host::OnCoverDownloaderOpenRequested()
+{
+}
+
+void Host::OnCreateMemoryCardOpenRequested()
+{
+}
+
+bool Host::InBatchMode()
+{
+	return false;
+}
+
+bool Host::InNoGUIMode()
+{
+	return false;
+}
+
+bool Host::ShouldPreferHostFileSelector()
+{
+	return false;
+}
+
+void Host::OpenHostFileSelectorAsync(std::string_view title, bool select_directory, FileSelectorCallback callback,
+	FileSelectorFilters filters, std::string_view initial_directory)
+{
+	// No native file picker on a kmsdrm-only handheld. FullscreenUI's own
+	// game list / file browser handles this path.
+	callback(std::string());
+}
+
+int Host::LocaleSensitiveCompare(std::string_view lhs, std::string_view rhs)
+{
+	const int res = std::strncmp(lhs.data(), rhs.data(), std::min(lhs.size(), rhs.size()));
+	if (res != 0)
+		return res;
+	return lhs.size() > rhs.size() ? 1 : (lhs.size() < rhs.size() ? -1 : 0);
+}
+
+s32 Host::Internal::GetTranslatedStringImpl(
+	const std::string_view context, const std::string_view msg, char* tbuf, size_t tbuf_space)
+{
+	if (msg.size() > tbuf_space)
+		return -1;
+	if (msg.empty())
+		return 0;
+
+	std::memcpy(tbuf, msg.data(), msg.size());
+	return static_cast<s32>(msg.size());
+}
+
+std::string Host::TranslatePluralToString(const char* context, const char* msg, const char* disambiguation, int count)
+{
+	TinyString count_str = TinyString::from_format("{}", count);
+
+	std::string ret(msg);
+	for (;;)
+	{
+		std::string::size_type pos = ret.find("%n");
+		if (pos == std::string::npos)
+			break;
+		ret.replace(pos, 2, count_str.view());
+	}
+	return ret;
+}
+
+std::optional<u32> InputManager::ConvertHostKeyboardStringToCode(const std::string_view str)
+{
+	return std::nullopt;
+}
+
+std::optional<std::string> InputManager::ConvertHostKeyboardCodeToString(u32 code)
+{
+	return std::nullopt;
+}
+
+const char* InputManager::ConvertHostKeyboardCodeToIcon(u32 code)
+{
+	return nullptr;
+}
+
+BEGIN_HOTKEY_LIST(g_host_hotkeys)
+END_HOTKEY_LIST()
+
+//////////////////////////////////////////////////////////////////////////
+// CPU thread + main
+//////////////////////////////////////////////////////////////////////////
+
+void Pcsx2SDL::CPUThreadMain(VMBootParameters initial_params, bool start_in_fsui, std::atomic<int>* ret)
+{
+	ret->store(EXIT_FAILURE);
+	s_cpu_thread_id.store(std::this_thread::get_id(), std::memory_order_release);
+
+	if (!VMManager::Internal::CPUThreadInitialize())
+	{
+		Console.Error("CPU thread init failed.");
+		VMManager::Internal::CPUThreadShutdown();
+		return;
+	}
+
+	VMManager::ApplySettings();
+
+	// SDL doesn't enumerate already-connected gamepads at init time — the
+	// initial SDL_EVENT_GAMEPAD_ADDED events sit in SDL's queue until
+	// something calls SDL_PollEvent. Drain them now and rebind, so any
+	// SDL2-style A/B/X/Y face-button bindings get migrated to SDL3 positional
+	// names (FaceSouth/East/West/North) before use. Qt sidesteps this via its
+	// background-poll QTimer; the SDL frontend must drain explicitly here.
+	InputManager::ReloadDevices();
+	VMManager::ReloadInputBindings(true);
+
+	// Bring up the GS thread + display surface before booting anything when
+	// starting straight into FullscreenUI. With a VM-on-startup path the
+	// VMManager::Initialize call below will open MTGS itself; with the
+	// bootless FSUI path it must be opened manually so the game-picker is
+	// visible before the user selects a game.
+	if (start_in_fsui)
+	{
+		ImGuiManager::InitializeFullscreenUI();
+		if (!MTGS::WaitForOpen())
+		{
+			Console.Error("Failed to open MTGS for FullscreenUI startup.");
+			VMManager::Internal::CPUThreadShutdown();
+			return;
+		}
+		MTGS::SetRunIdle(true);
+
+		// Scan once at startup, as the Qt frontend does: without it the game picker opens on an empty list until
+		// the user asks for a refresh. Incremental (the cache is kept), on the background thread.
+		Host::RefreshGameListAsync(false);
+	}
+
+	// The "initial" boot is the ISO/state passed on the CLI. When launching
+	// straight into FullscreenUI instead, this stays empty and the user picks
+	// a game from the game-list page (which queues a VMManager::Initialize
+	// call back via Host::RunOnCPUThread).
+	std::optional<VMBootParameters> pending_boot;
+	if (!start_in_fsui)
+		pending_boot = std::move(initial_params);
+
+	bool clean_shutdown = true;
+
+	// Main CPU thread state-machine loop. Exits on shutdown_requested OR on
+	// VM shutdown when no FullscreenUI session is active to fall back to.
+	while (!s_shutdown_requested.load(std::memory_order_acquire))
+	{
+		// Drain RunOnCPUThread callbacks (also done inside Execute via
+		// PumpMessagesOnCPUThread, but must be drained in the no-VM idle
+		// state too).
+		Pcsx2SDL::DrainCPUThreadQueue();
+
+		const VMState state = VMManager::GetState();
+		switch (state)
+		{
+			case VMState::Initializing:
+				// Transient — just spin until VMManager moves on.
+				continue;
+
+			case VMState::Running:
+				VMManager::Execute();
+				continue;
+
+			case VMState::Resetting:
+				VMManager::Reset();
+				continue;
+
+			case VMState::Stopping:
+				VMManager::Shutdown(false);
+				// After a clean shutdown, fall through to Shutdown / Paused.
+				continue;
+
+			case VMState::Paused:
+			case VMState::Shutdown:
+			{
+				// If a CLI-supplied boot is pending, kick it now.
+				if (pending_boot.has_value())
+				{
+					VMBootParameters bp = std::move(pending_boot.value());
+					pending_boot.reset();
+					const VMBootResult br = VMManager::Initialize(bp);
+					if (br != VMBootResult::StartupSuccess)
+					{
+						Console.ErrorFmt("VMManager::Initialize failed (result {}).",
+							static_cast<int>(br));
+						clean_shutdown = false;
+						s_shutdown_requested.store(true, std::memory_order_release);
+						break;
+					}
+					VMManager::SetState(VMState::Running);
+					continue;
+				}
+
+				// The game has ended and there is no game list to return to, so exit. A paused VM is not ended:
+				// the pause menu is up, and the poll below lets the gamepad drive it and resume.
+				if (state == VMState::Shutdown && !start_in_fsui)
+				{
+					s_shutdown_requested.store(true, std::memory_order_release);
+					break;
+				}
+
+				// Paused or in the game list: pump input so the gamepad can drive the menus.
+				// Qt does this from a background QTimer; here it has to run
+				// inline. Do it *outside* s_cpu_queue_lock — FSUI menu
+				// callbacks can call Host::RunOnCPUThread, which takes the
+				// same lock.
+				VMManager::IdlePollUpdate();
+
+				// Then wait for either a queued RunOnCPUThread (which might
+				// Initialize a new VM) or a state change. Bounded timeout so
+				// the shutdown flag is rechecked promptly.
+				std::unique_lock<std::mutex> lock(s_cpu_queue_lock);
+				s_cpu_queue_cv.wait_for(lock, std::chrono::milliseconds(16),
+					[]() { return !s_cpu_queue.empty(); });
+				continue;
+			}
+
+			default:
+				continue;
+		}
+	}
+
+	// Tear down in reverse order of setup. MTGS may already have been closed
+	// by VMManager::Shutdown if VMManager opened it; if opened for FSUI
+	// directly it will still be open here.
+	if (VMManager::HasValidVM())
+		VMManager::Shutdown(false);
+	if (MTGS::IsOpen())
+	{
+		MTGS::SetRunIdle(false);
+		MTGS::WaitForClose();
+	}
+
+	Pcsx2SDL::StopGameListRefreshThread();
+
+	VMManager::Internal::CPUThreadShutdown();
+	s_cpu_thread_id.store(std::thread::id{}, std::memory_order_release);
+	ret->store(clean_shutdown ? EXIT_SUCCESS : EXIT_FAILURE);
+}
+
+int main(int argc, char* argv[])
+{
+	// Short-circuit --help/--version before any heavyweight init so they
+	// work even on a system where the resources dir hasn't been laid down.
+	for (int i = 1; i < argc; i++)
+	{
+		if (!std::strcmp(argv[i], "--help") || !std::strcmp(argv[i], "-h"))
+		{
+			std::fprintf(stderr, "PCSX2 SDL frontend %s\n", GIT_REV);
+			std::fprintf(stderr, "Usage: %s [options] <iso-path>\n\n", argv[0]);
+			std::fprintf(stderr, "  --fullscreen-mode WxH    Request a specific display mode\n");
+			std::fprintf(stderr, "                           (default: monitor's preferred mode)\n");
+			std::fprintf(stderr, "  --headless WxH           No display: render to an offscreen WxH image (for PINE UIScreenshot)\n");
+			std::fprintf(stderr, "  -bigpicture              Start in Big Picture when no disc is given\n");
+			std::fprintf(stderr, "  --bios-only              Boot the BIOS without loading a disc\n");
+			std::fprintf(stderr, "  --state-from-file PATH   Resume from a save state file\n");
+			std::fprintf(stderr, "  --no-fast-boot           Skip fast boot (run full BIOS animation)\n");
+			std::fprintf(stderr, "  -h, --help               Show this help and exit\n");
+			std::fprintf(stderr, "  --version                Show version and exit\n");
+			return EXIT_SUCCESS;
+		}
+		if (!std::strcmp(argv[i], "--version"))
+		{
+			std::fprintf(stderr, "PCSX2 SDL frontend %s\n", GIT_REV);
+			return EXIT_SUCCESS;
+		}
+	}
+
+	CrashHandler::Install();
+	Log::SetConsoleOutputLevel(LOGLEVEL_INFO);
+
+	if (!Pcsx2SDL::InitializeConfig())
+	{
+		Console.Error("Failed to initialize config.");
+		return EXIT_FAILURE;
+	}
+
+	// Selected GPU driver pack (Linux): must be in the environment before anything loads libvulkan.
+	DriverPacks::ApplyEnvironment();
+
+	VMBootParameters params;
+	if (!Pcsx2SDL::ParseCommandLineArgs(argc, argv, params))
+		return EXIT_FAILURE;
+
+	const bool have_boot_target = !params.filename.empty() || params.source_type.has_value();
+	bool start_in_fsui = false;
+	if (!have_boot_target)
+	{
+		// No ISO supplied and no --bios-only — only valid if the
+		// StartBigPictureMode flag is set, in which case the frontend starts
+		// in the FullscreenUI game-picker.
+		if (s_force_bigpicture || Host::GetBaseBoolSettingValue("UI", "StartBigPictureMode", true))
+		{
+			start_in_fsui = true;
+		}
+		else
+		{
+			std::fprintf(stderr, "No ISO path supplied. Use --bios-only to boot the BIOS, "
+								 "or set UI/StartBigPictureMode=true in PCSX2.ini for the game-picker.\n");
+			return EXIT_FAILURE;
+		}
+	}
+
+	if (s_headless)
+	{
+		GSHeadless::SetEnabled(true);
+#ifdef ENABLE_OPENGL
+		// An EGL context with no window, for the OpenGL renderer. Only hosts that ask for it.
+		GLContext::AllowHeadless = true;
+#endif
+	}
+
+	Pcsx2SDL::InstallSignalHandler();
+	SysMemory::ReserveMemory();
+
+	std::atomic<int> thread_ret{EXIT_FAILURE};
+	std::thread cpu_thread([&]() {
+		Pcsx2SDL::CPUThreadMain(std::move(params), start_in_fsui, &thread_ret);
+	});
+
+	// VK_KHR_display has no host event loop; SDL3 input pumping happens
+	// inside InputManager on the CPU thread; signals are async. The main
+	// thread just waits for shutdown.
+	cpu_thread.join();
+
+#if defined(WAYLAND_API)
+	// Tear down the Wayland fallback window, if one was created. Done after the
+	// CPU/GS threads are gone so nothing is still presenting to the surface.
+	if (s_wayland_window)
+	{
+		SDL_DestroyWindow(s_wayland_window);
+		s_wayland_window = nullptr;
+		SDL_QuitSubSystem(SDL_INIT_VIDEO);
+	}
+#endif
+
+	return thread_ret.load();
+}

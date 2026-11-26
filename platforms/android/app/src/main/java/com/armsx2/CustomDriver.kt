@@ -1,0 +1,733 @@
+package com.armsx2
+
+import com.armsx2.runtime.MainActivityRuntime
+
+import android.content.Context
+import android.net.Uri
+import android.util.Log
+import com.armsx2.config.ConfigStore
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kr.co.iefriends.pcsx2.HttpClient
+import kr.co.iefriends.pcsx2.NativeApp
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.File
+import java.io.FileOutputStream
+import java.io.InputStream
+import java.util.zip.ZipInputStream
+
+/**
+ * Custom Vulkan driver management for Android. Lets a user replace the
+ * stock OEM Vulkan ICD with a Mesa Turnip build for the GS Vulkan
+ * renderer.
+ *
+ * Wraps three concerns:
+ *  1. [listInstalled] — enumerate drivers extracted under
+ *     `<externalFilesDir>/drivers/<id>/`. Each has a meta.json + the
+ *     .so file.
+ *  2. [fetchRemote] / [download] — pull the list of available drivers
+ *     from K11MCH1/AdrenoToolsDrivers GitHub releases and install a
+ *     pick by downloading + extracting its zip asset into the drivers
+ *     dir.
+ *  3. [applyToNative] — push the active selection to the JNI side via
+ *     `NativeApp.setCustomVulkanDriver`. Read by VKLoader on the next
+ *     MTGS::Open. Pass null to revert to the system loader.
+ *
+ * Storage layout matches the AdrenoToolsDrivers zip schema (the same
+ * one Yuzu/Strato/Vita3K consume) so any driver pack from that ecosystem
+ * drops in.
+ */
+object CustomDriver {
+
+    private const val TAG = "CustomDriver"
+
+    /** Source repos for the remote driver list. Each ships GitHub releases
+     *  whose .zip assets are adrenotools driver packs (`meta.json` +
+     *  `libvulkan_freedreno.so` at the root; meta.json is synthesized when a
+     *  pack omits it). Listed in display order.
+     *
+     *  `idPrefix` is folded into each driver's id so two repos can't collide
+     *  (and so a re-listed driver still matches its install). It is EMPTY for
+     *  K11MCH1 so its ids stay byte-identical to older builds — existing
+     *  installs keep matching; only new sources get a prefix. */
+    private data class DriverSource(
+        val label: String,
+        val releasesUrl: String,
+        val idPrefix: String,
+        /** Whether to list this source for the device's GL_RENDERER (null when unknown).
+         *  A pack only ever loads on the GPU vendor it was built for, so every source names its
+         *  family here — there is no default — and the list never offers an Adreno pack to a Mali
+         *  device or the reverse. An unreadable renderer matches no source: the family is unknown,
+         *  so nothing is offered, and a local import stays available. */
+        val supports: (renderer: String?) -> Boolean,
+    )
+
+    /** The GPUs our MaliSX2 packs drive: every Mali of arch 7 (Bifrost G31, G51, G52, G76), arch 9
+     *  (Valhall G57, G68, G77, G78 — G78AE included), arch 10 (G310, G510, G610, G710) and arch 11
+     *  (G615, G715 — Immortalis-G715 included), as malisx2 0.5.0 accepts them. Not the arch 6
+     *  Bifrost parts (G71, G72), not Midgard (T-series), not the 5th-gen parts (G620, G720, G625,
+     *  G725, G1). GL_RENDERER reads like "Mali-G57 MC2" or "Mali-G715-Immortalis MC11". No \b after
+     *  the number so "G78AE" matches; (?!\d) keeps a longer model number from matching on its prefix
+     *  (G31 against G310, G51 against G510). Releases before 0.5.0 drive fewer of these: 0.3.1 to
+     *  0.4.1 the G52, G76, arch 9 and arch 11 only. */
+    private val MALISX2_SUPPORTED_MALI =
+        Regex("""\bG(?:31|51|52|57|68|76|77|78|310|510|610|615|710|715)(?!\d)""", RegexOption.IGNORE_CASE)
+    internal fun isMaliSX2Supported(renderer: String?): Boolean =
+        renderer != null &&
+            (renderer.contains("Mali", ignoreCase = true) || renderer.contains("Immortalis", ignoreCase = true)) &&
+            MALISX2_SUPPORTED_MALI.containsMatchIn(renderer)
+
+    // Our own Vulkan driver for Mali, replacing Arm's on the kbase kernel driver. One
+    // adrenotools pack per release (meta.json + libvulkan_malisx2.so), loaded the
+    // same way as the Turnip packs. Listed only on the GPUs it supports.
+    // The id prefix stays "armsx2libmali" (the driver's old name): it is part of the install
+    // directory name and of the saved customDriverId of every pack already installed.
+    private val MALISX2_SOURCE = DriverSource(
+        "ARMSX2 · MaliSX2",
+        "https://api.github.com/repos/bmdhacks/malisx2/releases",
+        "armsx2libmali",
+        supports = ::isMaliSX2Supported,
+    )
+
+    /** Whether the driver list offers malisx2 for [renderer] (GL_RENDERER). The wrong-driver
+     *  notice (pushed to native by NativeApp.setMaliSX2Offered) keys on this, so a GPU gets the
+     *  notice exactly when it is offered the download. */
+    fun offersMaliSX2(renderer: String?): Boolean = MALISX2_SOURCE.supports(renderer)
+
+    /** Whether an installed pack is a malisx2 pack, from the directory it was installed in (its id)
+     *  and the library it loads. Same rule as GSDriverReport::IsMaliSX2Pack in the core, which
+     *  decides the same thing for the pack the Vulkan library was loaded with: "malisx2", or the
+     *  driver's old name "libmali" that the ids of already-installed packs still carry. */
+    internal fun isMaliSX2Pack(id: String, libraryName: String): Boolean =
+        listOf(id, libraryName).any {
+            it.contains("malisx2", ignoreCase = true) || it.contains("libmali", ignoreCase = true)
+        }
+
+    private fun versionOf(d: InstalledDriver): List<Int> =
+        Regex("""\d+""").findAll(d.name).map { it.value.toIntOrNull() ?: 0 }.toList()
+
+    private val VERSION_ORDER = Comparator<InstalledDriver> { a, b ->
+        val va = versionOf(a)
+        val vb = versionOf(b)
+        var c = 0
+        for (i in 0 until maxOf(va.size, vb.size)) {
+            c = (va.getOrElse(i) { 0 }).compareTo(vb.getOrElse(i) { 0 })
+            if (c != 0) break
+        }
+        c
+    }
+
+    /** The newest installed malisx2 pack (by the version in its name), or null when there is none. */
+    internal fun installedMaliSX2(installed: List<InstalledDriver>): InstalledDriver? =
+        installed.filter { isMaliSX2Pack(it.id, it.libraryName) }.maxWithOrNull(VERSION_ORDER)
+
+    /** What the notices call a malisx2 pack: its name without the build tag in parentheses, so
+     *  "malisx2 0.4.1 (g1a2b3c)" reads "malisx2 0.4.1". Never empty. */
+    internal fun maliSX2Label(d: InstalledDriver): String =
+        d.name.replace(Regex("""\s*\([^)]*\)\s*$"""), "").ifBlank { d.name }.ifBlank { d.id }
+
+    /** The malisx2 pack the driver list should offer a switch to: the GPU is one the list offers
+     *  malisx2 for, a malisx2 pack is installed, and the driver this scope runs with
+     *  ([effectiveId], the id from [CustomDriver.effectiveId], null for the system driver) is not
+     *  a malisx2 pack. Null when there is nothing to offer. */
+    internal fun maliSX2SwitchOffer(
+        renderer: String?, installed: List<InstalledDriver>, effectiveId: String?,
+    ): InstalledDriver? {
+        if (!offersMaliSX2(renderer)) return null
+        val pack = installedMaliSX2(installed) ?: return null
+        val running = installed.firstOrNull { it.id == effectiveId }
+        return if (running != null && isMaliSX2Pack(running.id, running.libraryName)) null else pack
+    }
+
+    /** Tells the core which malisx2 pack is installed (or none), for the "installed but not selected"
+     *  OSD notice at game start. Called with the per-game driver pick before each boot, since packs
+     *  come and go while the app runs. */
+    fun pushInstalledMaliSX2(installed: List<InstalledDriver>) {
+        val label = installedMaliSX2(installed)?.let(::maliSX2Label).orEmpty()
+        runCatching { NativeApp.setMaliSX2InstalledPack(label) }
+    }
+
+    // Our own Turnip: Mesa with the ARMSX2 driver patches, built as adrenotools packs.
+    // The emulator recognises these builds by the `(git-axfl<N>-…)` token in
+    // driverInfo and takes the barrier-less in-pass read road on Adreno 650 and up
+    // (6xx only) under one of them (GSGPUDriverProfile.cpp). One release per pack, so the
+    // release name is the row title.
+    // Listed on Adreno only: it is a Qualcomm driver and loads on nothing else. The first-run
+    // setup offers it on Adreno 6xx, 7xx and the listed 8xx parts only ([setupSource]).
+    private val ARMSX2_TURNIP_SOURCE = DriverSource(
+        "ARMSX2 · turnip",
+        "https://api.github.com/repos/bmdhacks/armsx2-turnip/releases",
+        "armsx2turnip",
+        supports = ::isAdreno,
+    )
+
+    /** Qualcomm's "A" marketing names, which some GL drivers report in GL_RENDERER instead of the
+     *  model number, and the model each one is. Only names identified on a device: the Anbernic
+     *  RG 55G1's "Adreno (TM) A12" is an Adreno 613 (its Vulkan deviceID 0x06010300 is the 613's
+     *  chip id, and Turnip names it 613). The emulator carries the same table (GSGPUProfileAdreno.cpp). */
+    private val ADRENO_MARKETING_MODELS = mapOf(12 to 613)
+    private val ADRENO_MARKETING_NAME = Regex("""Adreno[^A-Za-z0-9]*(?:TM[^A-Za-z0-9]*)?A(\d{1,2})(?!\d)""", RegexOption.IGNORE_CASE)
+
+    /** [renderer] with a listed marketing name replaced by its model number ("Adreno (TM) A12" ->
+     *  "Adreno (TM) 613"), so the model-number matches read it. Anything else comes back unchanged. */
+    internal fun withAdrenoModelNumber(renderer: String?): String? {
+        if (renderer == null) return null
+        val number = ADRENO_MARKETING_NAME.find(renderer)?.groups?.get(1) ?: return renderer
+        val model = ADRENO_MARKETING_MODELS[number.value.toInt()] ?: return renderer
+        // The "A" before the number goes too.
+        return renderer.replaceRange(number.range.first - 1, number.range.last + 1, model.toString())
+    }
+
+    /** Adreno 6xx and 7xx, and the 8xx parts our Turnip's device table lists: 810, 829, 830 and 840.
+     *  On any other 8xx number (825, 845, 850) the pack finds no device it knows and Vulkan has no
+     *  GPU, so those parts are not offered it. Of the listed 8xx parts only the 830 has been run.
+     *  GL_RENDERER reads like "Adreno (TM) 740", or a marketing name ([withAdrenoModelNumber]). */
+    private val ADRENO_ARMSX2_TURNIP = Regex("""Adreno\D*([67]\d\d|8(?:10|29|30|40))(?!\d)""", RegexOption.IGNORE_CASE)
+    internal fun isArmsx2TurnipPart(renderer: String?): Boolean {
+        val r = withAdrenoModelNumber(renderer) ?: return false
+        return ADRENO_ARMSX2_TURNIP.containsMatchIn(r)
+    }
+
+    /** Any Adreno, whatever its model: the Turnip and Adreno Tools packs drive Qualcomm's driver,
+     *  and none of them loads on another vendor's GPU. Read after [withAdrenoModelNumber] so a
+     *  marketing name ("Adreno (TM) A12") still counts as one. */
+    internal fun isAdreno(renderer: String?): Boolean =
+        withAdrenoModelNumber(renderer)?.contains("Adreno", ignoreCase = true) == true
+
+    /** Samsung's Xclipse (AMD RDNA based), which takes neither Arm's driver nor Turnip and has its
+     *  own pack sources in [DRIVER_SOURCES] (ExynosTools and MdiEx). */
+    internal fun isXclipse(renderer: String?): Boolean =
+        renderer?.contains("Xclipse", ignoreCase = true) == true
+
+    /** The source the first-run setup offers for [renderer]: ours for the GPU, or null when none of
+     *  our drivers is built for it (the system driver stays). The two predicates never overlap. */
+    private fun setupSource(renderer: String?): DriverSource? = when {
+        MALISX2_SOURCE.supports(renderer) -> MALISX2_SOURCE
+        isArmsx2TurnipPart(renderer) -> ARMSX2_TURNIP_SOURCE
+        else -> null
+    }
+
+    /** Name of the source the first-run setup offers for [renderer] ("ARMSX2 · MaliSX2"), or null
+     *  when it offers nothing. Cheap and offline, so the setup can decide whether it has a driver
+     *  page before it asks the network anything. */
+    fun setupOfferLabel(renderer: String?): String? = setupSource(renderer)?.label
+
+    /** The newest pack of the source [setupOfferLabel] names, or null when there is none or the
+     *  release list can't be read. Blocks on the network: call it from Dispatchers.IO. GitHub lists
+     *  releases newest first, and a source's list order is kept. */
+    fun fetchSetupOffer(renderer: String?): RemoteDriver? {
+        val src = setupSource(renderer) ?: return null
+        return fetchSource(src, "ARMSX2/" + runCatching { NativeApp.getBuildVersion() }.getOrNull().orEmpty().ifEmpty { "dev" })
+            .firstOrNull()
+    }
+
+    /** Whether the installed pack [id] came from the source labelled [sourceLabel] (a
+     *  [RemoteDriver.source]). False for K11MCH1, whose ids carry no prefix, and for local imports. */
+    internal fun isFromSource(id: String, sourceLabel: String): Boolean {
+        val prefix = DRIVER_SOURCES.firstOrNull { it.label == sourceLabel }?.idPrefix
+        return !prefix.isNullOrEmpty() && id.startsWith("$prefix-")
+    }
+
+    /** Installs [pack], unless it is installed already, and makes it the global driver. It takes
+     *  effect when a game next starts. Null when the download or the extraction failed. */
+    suspend fun installAsGlobal(context: Context, pack: RemoteDriver): InstalledDriver? {
+        val installed = withContext(Dispatchers.IO) {
+            val pick = listInstalled(context).firstOrNull { it.id == pack.id } ?: download(context, pack)
+            if (pick != null) {
+                runCatching {
+                    val global = ConfigStore.loadGlobal()
+                    ConfigStore.saveGlobal(global.copy(output = global.output.copy(customDriverId = pick.id)))
+                }
+            }
+            pick
+        } ?: return null
+        MainActivityRuntime.customDriverId.value = installed.id
+        return installed
+    }
+
+    private val DRIVER_SOURCES = listOf(
+        MALISX2_SOURCE,
+        ARMSX2_TURNIP_SOURCE,
+        DriverSource(
+            "AdrenoToolsDrivers",
+            "https://api.github.com/repos/K11MCH1/AdrenoToolsDrivers/releases",
+            "",
+            supports = ::isAdreno,
+        ),
+        DriverSource(
+            "MrPurple · purple-turnip",
+            "https://api.github.com/repos/MrPurple666/purple-turnip/releases",
+            "purpleturnip",
+            supports = ::isAdreno,
+        ),
+        // Scheduled biweekly freedreno/Turnip adrenotools builds (incl. Gen8 + a7xx
+        // Qualcomm driver packages). Same GitHub-releases meta.json format as above.
+        DriverSource(
+            "StevenMXZ · Adreno-Tools",
+            "https://api.github.com/repos/StevenMXZ/Adreno-Tools-Drivers/releases",
+            "stevenmxz",
+            supports = ::isAdreno,
+        ),
+        // crueter's GameHub Turnip packs, tuned for Snapdragon 8 Elite / Adreno 8xx
+        // (Gen 8). Same GitHub-releases adrenotools zip format as the sources above.
+        DriverSource(
+            "crueter · GameHub 8Elite",
+            "https://api.github.com/repos/crueter/GameHub-8Elite-Drivers/releases",
+            "gamehub8e",
+            supports = ::isAdreno,
+        ),
+        // PojavLauncherTeam/freedreno-builder — biweekly Mesa Turnip builds (archived at
+        // Mesa ~Jan 2025). Each release ships a bare libvulkan_freedreno.so (no meta.json,
+        // synthesized on install). A solid known-good Turnip for older Adreno 6xx /
+        // Android 10 devices.
+        DriverSource(
+            "PojavLauncherTeam · freedreno (A10)",
+            "https://api.github.com/repos/PojavLauncherTeam/freedreno-builder/releases",
+            "freedrenobuilder",
+            supports = ::isAdreno,
+        ),
+        // WearyConcern1165/ExynosTools — driver packs for Samsung Xclipse (Exynos) GPUs.
+        // Same GitHub-releases adrenotools .zip format as the sources above. Xclipse only,
+        // like MdiEx below: these packs drive that GPU and nothing else.
+        DriverSource(
+            "WearyConcern1165 · ExynosTools",
+            "https://api.github.com/repos/WearyConcern1165/ExynosTools/releases",
+            "exynostools",
+            supports = ::isXclipse,
+        ),
+        // avavo/MdiEx — the packs ExynosTools republishes, released here first and newer: one zip
+        // per Exynos chip (2200, 2400, 2600, ...) plus a chip-neutral "Nativo" base. Same meta.json
+        // zip format. Xclipse only, so it is listed only where GL_RENDERER names an Xclipse part.
+        DriverSource(
+            "avavo · MdiEx",
+            "https://api.github.com/repos/avavo/MdiEx/releases",
+            "mdiex",
+            supports = ::isXclipse,
+        ),
+    )
+
+    /** Sane default for the driver's library soname when meta.json
+     *  doesn't include one. Every Turnip release we care about uses
+     *  this name, but the field is technically optional in the schema. */
+    private const val DEFAULT_LIBRARY_NAME = "libvulkan_freedreno.so"
+
+    /** Labels of the sources the download list offers for [renderer] (the system GL_RENDERER), in
+     *  display order. This is the whole GPU-family rule the list applies; [fetchRemote] filters on
+     *  the same [DriverSource.supports] predicates. */
+    internal fun sourceLabelsFor(renderer: String?): List<String> =
+        DRIVER_SOURCES.filter { it.supports(renderer) }.map { it.label }
+
+    /** A driver extracted under `<externalFilesDir>/drivers/<id>/`. */
+    data class InstalledDriver(
+        val id: String,
+        val name: String,
+        val description: String,
+        val author: String,
+        val vendor: String,
+        val version: String,
+        val libraryName: String,
+        val driverDir: File,
+    ) {
+        val driverFile: File get() = File(driverDir, libraryName)
+        /** Subdirectory the driver may write its shader cache into. The
+         *  redirect hook captures the driver's file IO to this prefix
+         *  so it doesn't try to write under `/system/`. */
+        val redirectDir: File get() = File(driverDir, "cache")
+    }
+
+    /** A driver listed on the GitHub releases page (not yet installed). */
+    data class RemoteDriver(
+        val id: String,
+        val releaseName: String,
+        val assetName: String,
+        val tagName: String,
+        val publishedAt: String,
+        val assetUrl: String,
+        val sizeBytes: Long,
+        val source: String = "",
+        /** What a list shows for it: the release's name, or the zip's own name when the release
+         *  ships one zip per device (MdiEx: 1480, 2200, 2400, ...), so each row says which one it is. */
+        val title: String = releaseName,
+    )
+
+    // ---- Installed drivers --------------------------------------------------
+
+    /** Drivers MUST live under internal app-private storage (`filesDir`,
+     *  resolves to `/data/user/0/<pkg>/files/`). `getExternalFilesDir`
+     *  returns the sdcard-style `/storage/emulated/0/...` mount which is
+     *  hardened against dlopen — dlopen reports "Permission denied"
+     *  trying to map shared-object segments from there. The adrenotools
+     *  driver.h header explicitly calls this out:
+     *  "This path MUST NOT be on sdcard/storage. ... Otherwise you will
+     *   get permission denied because dlopen() can't be done on *.so
+     *   libraries that any random user or application can manipulate
+     *   (which would be a security risk)." */
+    private fun driversRoot(context: Context): File =
+        File(context.filesDir, "drivers").apply { mkdirs() }
+
+    /** Enumerate installed drivers. Skips dirs that don't have a
+     *  meta.json or whose .so file is missing — those are mid-install
+     *  or corrupted and the user can re-download. */
+    fun listInstalled(context: Context): List<InstalledDriver> {
+        val root = driversRoot(context)
+        val dirs = root.listFiles { f -> f.isDirectory } ?: return emptyList()
+        return dirs.mapNotNull { dir ->
+            val metaFile = File(dir, "meta.json")
+            if (!metaFile.exists()) return@mapNotNull null
+            val text = runCatching { metaFile.readText() }.getOrNull() ?: return@mapNotNull null
+            val json = runCatching { JSONObject(text) }.getOrNull() ?: return@mapNotNull null
+            val libName = json.optString("libraryName").ifEmpty { DEFAULT_LIBRARY_NAME }
+            if (!File(dir, libName).exists()) return@mapNotNull null
+            InstalledDriver(
+                id = dir.name,
+                name = json.optString("name").ifEmpty { dir.name },
+                description = json.optString("description"),
+                author = json.optString("author"),
+                vendor = json.optString("vendor"),
+                version = json.optString("driverVersion").ifEmpty { json.optString("packageVersion") },
+                libraryName = libName,
+                driverDir = dir,
+            )
+        }.sortedBy { it.name.lowercase() }
+    }
+
+    /** The driver a game actually runs with: its own pick if that is still installed, else the
+     *  global pick if that is, else null (the system driver). Deleting a driver leaves its id in
+     *  any per-game settings that chose it; those games follow the global driver until the user
+     *  picks again, rather than silently dropping to the system driver. Blank means system. */
+    fun effectiveId(gameId: String, globalId: String, installedIds: Collection<String>): String? =
+        gameId.takeIf { it.isNotBlank() && it in installedIds }
+            ?: globalId.takeIf { gameId.isNotBlank() && it.isNotBlank() && it in installedIds }
+
+    /** Recursively remove an installed driver. */
+    fun delete(installed: InstalledDriver) {
+        installed.driverDir.deleteRecursively()
+    }
+
+    // ---- GitHub release list ------------------------------------------------
+
+    /** Fetch every source that supports [renderer] (the system GL_RENDERER)
+     *  and flatten into one RemoteDriver per .zip asset. The sources are filtered by GPU family
+     *  ([DriverSource.supports]), so a Mali device is never offered an Adreno pack or the reverse;
+     *  a GPU none of the sources builds for — including an unreadable GL_RENDERER — gets an empty
+     *  list. Suspending — caller must wrap
+     *  in `withContext(Dispatchers.IO)` (the JNI call blocks the
+     *  calling thread). Returns empty list on any network/parse error;
+     *  callers can detect "I had drivers shown a moment ago, now
+     *  nothing" by tracking the previous size. */
+    fun fetchRemote(renderer: String?): List<RemoteDriver> {
+        val userAgent = "ARMSX2/" + runCatching {
+            NativeApp.getBuildVersion()
+        }.getOrNull().orEmpty().ifEmpty { "dev" }
+        val out = mutableListOf<RemoteDriver>()
+        val seen = HashSet<String>()
+        // Sequential per source; one dead/rate-limited source returns empty and
+        // never blanks the others. Dedup by id guards the LazyVerticalGrid key set.
+        for (src in DRIVER_SOURCES) {
+            if (!src.supports(renderer)) continue
+            for (rd in fetchSource(src, userAgent)) {
+                if (seen.add(rd.id)) out += rd
+            }
+        }
+        return out
+    }
+
+    /** Fetch one source's releases and flatten into one RemoteDriver per .zip
+     *  asset. Empty on any network/parse error so a single failing source can't
+     *  blank the whole list. */
+    private fun fetchSource(src: DriverSource, userAgent: String): List<RemoteDriver> {
+        val resp = runCatching {
+            HttpClient.doRequest(src.releasesUrl, "GET", null, userAgent, 15000)
+        }.getOrNull() ?: return emptyList()
+        if (resp.statusCode != 200 || resp.data.isEmpty()) {
+            Log.w(TAG, "fetchRemote(${src.label}): status=${resp.statusCode}, size=${resp.data.size}")
+            return emptyList()
+        }
+
+        val text = runCatching { String(resp.data, Charsets.UTF_8) }.getOrNull() ?: return emptyList()
+        val arr = runCatching { JSONArray(text) }.getOrNull() ?: return emptyList()
+
+        val out = mutableListOf<RemoteDriver>()
+        for (i in 0 until arr.length()) {
+            val release = arr.optJSONObject(i) ?: continue
+            val tag = release.optString("tag_name").ifEmpty { release.optString("name") }
+            val releaseName = release.optString("name").ifEmpty { tag }
+            val publishedAt = release.optString("published_at")
+            val assets = release.optJSONArray("assets") ?: continue
+            val zips = (0 until assets.length()).count {
+                assets.optJSONObject(it)?.optString("name")?.endsWith(".zip", ignoreCase = true) == true
+            }
+            for (j in 0 until assets.length()) {
+                val asset = assets.optJSONObject(j) ?: continue
+                val assetName = asset.optString("name")
+                if (!assetName.endsWith(".zip", ignoreCase = true)) continue
+                val url = asset.optString("browser_download_url")
+                if (url.isEmpty()) continue
+                val size = asset.optLong("size", 0L)
+                // ID scopes by tag (a repo can ship the same asset filename in
+                // multiple releases) and by source prefix (so two repos can't
+                // collide). idPrefix is "" for K11MCH1 → ids unchanged.
+                val idTag = if (src.idPrefix.isEmpty()) tag else "${src.idPrefix}-$tag"
+                out += RemoteDriver(
+                    id = makeId(idTag, assetName),
+                    releaseName = releaseName,
+                    assetName = assetName,
+                    tagName = tag,
+                    publishedAt = publishedAt,
+                    assetUrl = url,
+                    sizeBytes = size,
+                    source = src.label,
+                    title = if (zips > 1) zipTitle(assetName) else releaseName,
+                )
+            }
+        }
+        return out
+    }
+
+    /** "MdiEx_1480_v3.6.zip" -> "MdiEx 1480 v3.6". */
+    private fun zipTitle(assetName: String): String =
+        assetName.substring(0, assetName.length - ".zip".length).replace('_', ' ').trim().ifEmpty { assetName }
+
+    /** Stable id from `<tag>-<assetBase>`. Strips ".zip" + non-filename
+     *  chars so the driver dir name is dlopen-safe (paths get fed straight
+     *  to adrenotools, which feeds them to dlopen). The tag prefix
+     *  disambiguates assets that share a filename across releases. */
+    private fun makeId(tag: String, assetName: String): String {
+        val base = assetName.removeSuffix(".zip").removeSuffix(".ZIP")
+        val combined = if (tag.isNotEmpty()) "$tag-$base" else base
+        return combined.replace(Regex("[^A-Za-z0-9._-]"), "_").lowercase()
+    }
+
+    // ---- Download + install -------------------------------------------------
+
+    /** Download a remote driver and extract it into
+     *  `<externalFilesDir>/drivers/<id>/`. Suspending — caller wraps in
+     *  IO dispatcher. `onProgress` is called with bytesRead/total during
+     *  the HTTP download phase (extraction is fast enough to not need
+     *  progress). Returns the InstalledDriver on success, null on any
+     *  failure (caller checks return). */
+    fun download(
+        context: Context,
+        remote: RemoteDriver,
+        onProgress: ((Long, Long) -> Unit)? = null,
+    ): InstalledDriver? {
+        val userAgent = "ARMSX2/" + runCatching {
+            NativeApp.getBuildVersion()
+        }.getOrNull().orEmpty().ifEmpty { "dev" }
+
+        // HttpClient.doRequest returns the whole body as byte[]; for a
+        // ~30MB driver zip this is fine. If we ever ship drivers >100MB
+        // we'd want a streaming download API; not worth it today.
+        val resp = runCatching {
+            HttpClient.doRequest(remote.assetUrl, "GET", null, userAgent, 60_000)
+        }.getOrNull() ?: return null
+        if (resp.statusCode != 200 || resp.data.isEmpty()) {
+            Log.w(TAG, "download: status=${resp.statusCode}, size=${resp.data.size}")
+            return null
+        }
+        onProgress?.invoke(resp.data.size.toLong(), remote.sizeBytes.coerceAtLeast(resp.data.size.toLong()))
+
+        return installFromStream(context, remote.id, resp.data.inputStream())
+    }
+
+    /** Install a driver from a user-picked local .zip URI (via SAF
+     *  OpenDocument). Synchronous IO — call from a coroutine on
+     *  Dispatchers.IO. Returns the InstalledDriver on success, null
+     *  on any extract / validation failure. The id is derived from
+     *  the URI's last segment so re-importing the same file is
+     *  idempotent. */
+    fun installFromUri(context: Context, uri: Uri): InstalledDriver? {
+        val filename = uri.lastPathSegment?.substringAfterLast('/')?.substringAfterLast(':')
+            ?: "imported_driver.zip"
+        val id = makeId("local", filename)
+        val stream = runCatching { context.contentResolver.openInputStream(uri) }.getOrNull()
+        if (stream == null) {
+            Log.w(TAG, "installFromUri: couldn't open $uri")
+            return null
+        }
+        return stream.use { installFromStream(context, id, it) }
+    }
+
+    /** Shared extract+commit path used by both [download] and
+     *  [installFromUri]. Reads the entire zip into a tmp dir, validates
+     *  meta.json + library .so, then renames into place under
+     *  drivers/<id>/. */
+    private fun installFromStream(context: Context, id: String, stream: InputStream): InstalledDriver? {
+        val targetDir = File(driversRoot(context), id)
+        val tmpDir = File(driversRoot(context), "$id.tmp").also {
+            if (it.exists()) it.deleteRecursively()
+            it.mkdirs()
+        }
+
+        try {
+            ZipInputStream(stream).use { zin ->
+                while (true) {
+                    val entry = zin.nextEntry ?: break
+                    val name = entry.name
+                    if (name.contains("..") || name.startsWith("/")) {
+                        Log.w(TAG, "install: skipping suspicious entry $name")
+                        continue
+                    }
+                    // K11MCH1 zips put files at the root. If a zip ever
+                    // nests, flatten to root for our adrenotools driverDir
+                    // contract (driverName resolves directly inside driverDir).
+                    val outName = name.substringAfterLast('/')
+                    if (outName.isEmpty() || entry.isDirectory) continue
+                    val outFile = File(tmpDir, outName)
+                    FileOutputStream(outFile).use { fos ->
+                        zin.copyTo(fos)
+                    }
+                    zin.closeEntry()
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "install: extract failed: ${e.message}")
+            tmpDir.deleteRecursively()
+            return null
+        }
+
+        // Some sources ship a bare libvulkan_*.so with no meta.json (e.g.
+        // PojavLauncherTeam/freedreno-builder). Synthesize a minimal manifest so those
+        // still install as adrenotools packs — honoring the DRIVER_SOURCES contract above.
+        val meta = File(tmpDir, "meta.json")
+        if (!meta.exists()) {
+            val soFile = tmpDir.listFiles { f -> f.isFile && f.name.endsWith(".so") }?.firstOrNull()
+            if (soFile != null) {
+                val synthLib = if (File(tmpDir, DEFAULT_LIBRARY_NAME).exists()) DEFAULT_LIBRARY_NAME else soFile.name
+                runCatching {
+                    meta.writeText(
+                        JSONObject().apply {
+                            put("schemaVersion", 1)
+                            put("name", id)
+                            put("description", "Turnip / freedreno (synthesized manifest)")
+                            put("author", "freedreno-builder")
+                            put("vendor", "Mesa")
+                            put("driverVersion", "")
+                            put("minApi", 24)
+                            put("libraryName", synthLib)
+                        }.toString()
+                    )
+                    Log.i(TAG, "install: synthesized meta.json ($synthLib)")
+                }
+            }
+        }
+        if (!meta.exists()) {
+            Log.w(TAG, "install: zip missing meta.json")
+            tmpDir.deleteRecursively()
+            return null
+        }
+        val libName = runCatching {
+            JSONObject(meta.readText()).optString("libraryName").ifEmpty { DEFAULT_LIBRARY_NAME }
+        }.getOrDefault(DEFAULT_LIBRARY_NAME)
+        if (!File(tmpDir, libName).exists()) {
+            Log.w(TAG, "install: zip missing $libName")
+            tmpDir.deleteRecursively()
+            return null
+        }
+
+        if (targetDir.exists()) targetDir.deleteRecursively()
+        if (!tmpDir.renameTo(targetDir)) {
+            Log.w(TAG, "install: rename $tmpDir -> $targetDir failed")
+            tmpDir.deleteRecursively()
+            return null
+        }
+        File(targetDir, "cache").mkdirs()
+
+        return listInstalled(context).firstOrNull { it.id == id }
+    }
+
+    // ---- Native bridge ------------------------------------------------------
+
+    /** Push the active selection to native. Pass null to revert to the
+     *  system loader. The native side reads these on the next
+     *  Vulkan::LoadVulkanLibrary call (first MTGS::Open), so this must
+     *  be called BEFORE MainActivityRuntime.start()'s applyRendererPrefs runs the VM. */
+    // ---- Turnip options (#719) ------------------------------------------------------------
+    // Mesa drivers take their tuning from the process environment, the way Eden's Freedreno
+    // settings page sets it: FD_DEV_FEATURES is read each time the Vulkan device is created, so
+    // it follows the next game start; TU_DEBUG is read once, when the driver first loads. The
+    // Qualcomm driver reads none of it, so these do nothing unless a Turnip build is in use.
+
+    private const val KEY_UBWC_HINT = "driver.turnip.ubwcFlagHint"
+    private const val KEY_ENV = "driver.turnip.env"
+    private const val UBWC_HINT = "enable_tp_ubwc_flag_hint"
+
+    // Only the Mesa families. The same environment carries the app's own switches (the Vulkan
+    // loader path, ANGLE's libraries), and a stray line must not be able to reach those.
+    private val ENV_PREFIXES = listOf("FD_", "TU_", "IR3_", "MESA_")
+    private val ENV_NAME = Regex("[A-Z][A-Z0-9_]*")
+
+    /** What [applyDriverEnv] set last time, so a variable taken out is also taken back. */
+    private val appliedEnv = HashSet<String>()
+
+    /** FD_DEV_FEATURES enable_tp_ubwc_flag_hint=1: recent Turnip builds draw glitches on
+     *  Snapdragon 8 Gen 2 (Adreno 740) without it. */
+    fun ubwcFlagHint(): Boolean = MainActivityRuntime.prefs.getBoolean(KEY_UBWC_HINT, false)
+
+    fun setUbwcFlagHint(on: Boolean) {
+        MainActivityRuntime.prefs.edit().putBoolean(KEY_UBWC_HINT, on).apply()
+    }
+
+    /** The user's own variables, one NAME=value per line. */
+    fun driverEnvText(): String = MainActivityRuntime.prefs.getString(KEY_ENV, "") ?: ""
+
+    fun setDriverEnvText(text: String) {
+        MainActivityRuntime.prefs.edit().putString(KEY_ENV, text).apply()
+    }
+
+    /** NAME=value lines, keeping only Mesa variables. Blank lines and # comments are skipped. */
+    internal fun parseDriverEnv(text: String): LinkedHashMap<String, String> {
+        val out = LinkedHashMap<String, String>()
+        for (raw in text.lineSequence()) {
+            val line = raw.trim()
+            if (line.isEmpty() || line.startsWith("#")) continue
+            val eq = line.indexOf('=')
+            if (eq <= 0) continue
+            val name = line.substring(0, eq).trim()
+            if (!ENV_NAME.matches(name) || ENV_PREFIXES.none { name.startsWith(it) }) continue
+            out[name] = line.substring(eq + 1).trim()
+        }
+        return out
+    }
+
+    /** The variables to set: the user's lines, with the UBWC hint joined onto any
+     *  FD_DEV_FEATURES they wrote (features are colon-separated). */
+    internal fun driverEnv(text: String, ubwcHint: Boolean): LinkedHashMap<String, String> {
+        val vars = parseDriverEnv(text)
+        if (ubwcHint) {
+            val features = vars["FD_DEV_FEATURES"].orEmpty()
+            if (!features.split(':').any { it.substringBefore('=').trim() == UBWC_HINT })
+                vars["FD_DEV_FEATURES"] =
+                    if (features.isBlank()) "$UBWC_HINT=1" else "$features:$UBWC_HINT=1"
+        }
+        return vars
+    }
+
+    /** Put the Turnip options into the environment. Runs before each game start, ahead of the
+     *  Vulkan device being created; a variable dropped since the last call is unset. */
+    fun applyDriverEnv() {
+        val vars = driverEnv(driverEnvText(), ubwcFlagHint())
+        for (name in appliedEnv - vars.keys) runCatching { android.system.Os.unsetenv(name) }
+        for ((name, value) in vars) runCatching { android.system.Os.setenv(name, value, true) }
+        appliedEnv.clear()
+        appliedEnv.addAll(vars.keys)
+        if (vars.isNotEmpty())
+            Log.i(TAG, "driver env: " + vars.entries.joinToString(" ") { "${it.key}=${it.value}" })
+    }
+
+    fun applyToNative(context: Context, installed: InstalledDriver?) {
+        if (installed == null) {
+            NativeApp.setCustomVulkanDriver("", "", "", "")
+            return
+        }
+        // adrenotools' path resolution wants the driver dir to end with
+        // a slash. The redirect dir doesn't strictly require it but we
+        // pass it the same way for consistency.
+        val driverDirPath = installed.driverDir.absolutePath + "/"
+        val redirectDirPath = installed.redirectDir.apply { mkdirs() }.absolutePath + "/"
+        val hookLibDir = context.applicationInfo.nativeLibraryDir
+        NativeApp.setCustomVulkanDriver(
+            driverDirPath, installed.libraryName, redirectDirPath, hookLibDir)
+    }
+}

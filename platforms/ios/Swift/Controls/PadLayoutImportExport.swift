@@ -1,0 +1,147 @@
+// SPDX-License-Identifier: GPL-3.0+
+
+import Foundation
+import SwiftUI
+
+struct PadLayoutImportResult {
+    var displayName: String?
+    var snapshot: PadLayoutSnapshot
+    var classSnapshots: [String: PadLayoutSnapshot]?
+}
+
+enum PadLayoutImportExport {
+    static let schemaVersion = 1
+
+    static func exportData(for preset: PadLayoutPreset) throws -> Data {
+        try exportData(displayName: preset.displayName, snapshot: preset.snapshot, classSnapshots: preset.classSnapshots)
+    }
+
+    static func exportData(displayName: String, snapshot: PadLayoutSnapshot, classSnapshots: [String: PadLayoutSnapshot]? = nil) throws -> Data {
+        var payload = PadLayoutExportPayload(displayName: displayName, snapshot: snapshot)
+        payload.classSnapshots = classSnapshots
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try encoder.encode(payload)
+    }
+
+    static func decodeImport(from data: Data, fallbackName: String?) throws -> PadLayoutImportResult {
+        let decoder = JSONDecoder()
+        let payload = try decoder.decode(PadLayoutExportPayload.self, from: data)
+        return PadLayoutImportResult(
+            displayName: sanitizedDisplayName(
+                payload.displayName ?? payload.name,
+                fallback: sourceName(from: fallbackName)
+            ),
+            snapshot: clampedSnapshot(payload.snapshot),
+            classSnapshots: PadDeviceClass.classCopies(payload.classSnapshots)?.mapValues(clampedSnapshot)
+        )
+    }
+
+    static func decodeSnapshot(from data: Data) throws -> PadLayoutSnapshot {
+        try decodeImport(from: data, fallbackName: nil).snapshot
+    }
+
+    static func exportedFileName(for displayName: String) -> String {
+        let name = sanitizedFileStem(displayName, fallback: "Layout")
+        return "\(name).layout.json"
+    }
+
+    static func clampedSnapshot(_ snapshot: PadLayoutSnapshot) -> PadLayoutSnapshot {
+        var s = snapshot
+        s.portrait = clampPositions(snapshot.portrait)
+        s.landscape = clampPositions(snapshot.landscape)
+        s.perButtonPortrait = clampPositions(snapshot.perButtonPortrait)
+        s.perButtonLandscape = clampPositions(snapshot.perButtonLandscape)
+        s.book = snapshot.book.map(clampPositions)
+        s.perButtonBook = snapshot.perButtonBook.map(clampPositions)
+        return s
+    }
+
+    private static func clampPositions(_ positions: [String: PadGroupPosition]) -> [String: PadGroupPosition] {
+        positions.mapValues { position in
+            var p = position
+            p.x = clampedUnit(position.x)
+            p.y = clampedUnit(position.y)
+            p.scaleX = PadLayoutMetrics.clampedScale(position.scaleX)
+            p.scaleY = PadLayoutMetrics.clampedScale(position.scaleY)
+            p.hitScaleX = PadLayoutMetrics.clampedScale(position.hitScaleX)
+            p.hitScaleY = PadLayoutMetrics.clampedScale(position.hitScaleY)
+            p.opacity = PadLayoutMetrics.clampedOpacity(position.opacity)
+            p.zone = position.zone.flatMap(PadLayoutMetrics.clampedZone)
+            return p
+        }
+    }
+
+    private static func clampedUnit(_ value: CGFloat) -> CGFloat {
+        guard value.isFinite else { return 0.5 }
+        return min(max(value, 0), 1)
+    }
+
+    private static func sanitizedDisplayName(_ name: String?, fallback: String?) -> String? {
+        let trimmed = (name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            return trimmed
+        }
+        let fallback = (fallback ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return fallback.isEmpty ? nil : fallback
+    }
+
+    private static func sourceName(from fileName: String?) -> String? {
+        guard let fileName else { return nil }
+        var stem = URL(fileURLWithPath: fileName).deletingPathExtension().lastPathComponent
+        if stem.lowercased().hasSuffix(".layout") {
+            stem = String(stem.dropLast(".layout".count))
+        }
+        return stem.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func sanitizedFileStem(_ name: String, fallback: String) -> String {
+        let invalid = CharacterSet(charactersIn: "\\/:*?\"<>|")
+            .union(.newlines)
+            .union(.controlCharacters)
+        let cleaned = name
+            .components(separatedBy: invalid)
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? fallback : cleaned
+    }
+}
+
+private struct PadLayoutExportPayload: Codable {
+    var schemaVersion: Int?
+    var displayName: String?
+    var name: String?
+    var portrait: [String: PadGroupPosition]
+    var landscape: [String: PadGroupPosition]
+    var perButtonPortrait: [String: PadGroupPosition]
+    var perButtonLandscape: [String: PadGroupPosition]
+    var controlVisibility: [String: Bool]
+    var book: [String: PadGroupPosition]?
+    var perButtonBook: [String: PadGroupPosition]?
+    var classSnapshots: [String: PadLayoutSnapshot]?
+
+    var snapshot: PadLayoutSnapshot {
+        PadLayoutSnapshot(
+            portrait: portrait,
+            landscape: landscape,
+            perButtonPortrait: perButtonPortrait,
+            perButtonLandscape: perButtonLandscape,
+            controlVisibility: controlVisibility,
+            book: book,
+            perButtonBook: perButtonBook
+        )
+    }
+
+    init(displayName: String, snapshot: PadLayoutSnapshot) {
+        self.schemaVersion = PadLayoutImportExport.schemaVersion
+        self.displayName = displayName
+        self.name = displayName
+        self.portrait = snapshot.portrait
+        self.landscape = snapshot.landscape
+        self.perButtonPortrait = snapshot.perButtonPortrait
+        self.perButtonLandscape = snapshot.perButtonLandscape
+        self.controlVisibility = snapshot.controlVisibility
+        self.book = snapshot.book
+        self.perButtonBook = snapshot.perButtonBook
+    }
+}

@@ -1,0 +1,750 @@
+// SPDX-FileCopyrightText: 2026 yaps2 Dev Team
+// SPDX-License-Identifier: GPL-3.0+
+//
+// mVUProgCache packs: where they live, the header handshake, the log's
+// crash safety, and what is deleted as leftovers.
+//
+// A pack is one file per title, VU and options sentinel,
+// vu_jit/packs/<title>/vu{0,1}-<sentinel hex>.pack: a 64-byte header
+// (format, compiler ABI, VU, sentinel, arch, build, page size, layout
+// stamp), then an append-only log of
+// checksummed records. Nothing is written until there is something to
+// write, and nothing a session writes touches another pack.
+//
+// What this proves:
+//
+//   1. Init writes nothing; the first flush writes a header matching the
+//      running build.
+//   2. Another sentinel, or another title, opens a pack of its own and
+//      leaves the first one intact (two games with different GameDB VU
+//      settings, played in turn, keep a cache each).
+//   3. A pack whose header differs (magic, format, compiler ABI, VU, arch,
+//      build, page size, layout stamp) loads nothing and is started again at
+//      the next write.
+//   4. A log that ends in a broken record keeps every record before it,
+//      and the next write cuts the broken one off first.
+//   4c-4f. The RAM cap bounds the pack in RAM and on disk: a read keeps the
+//      newest records that fit, the writer drops what was used longest ago
+//      to get back under it, and the table's bytes are a few large blocks,
+//      not one per record.
+//   5. The older layouts, writes cut short, and packs unused for 60 days
+//      are deleted; recent packs and the tripwire's memory stay.
+//
+// Records here are VU1 pack records (the kind the chunk store's bodies are
+// kept as) with made-up bytes under made-up hashes: they need no microVU
+// behind them. mvu_progcache_disk_tests.cpp covers VU0's programs and
+// vu1_chunk_pack_tests.cpp the chunk store's bodies.
+//
+// References:
+//   pcsx2/arm64/microVU_ProgCache-arm64.inl  PackHeader, RecordHeader, LoadPack, WritePack, DeleteLeftovers
+//   pcsx2/arm64/microVU-arm64.h             kMvuCompilerAbiVersion
+//   pcsx2/arm64/microVU_ProgCache-arm64.h    kProgCacheFormatVersion, ResetForTest
+
+#include <gtest/gtest.h>
+
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <string>
+#include <system_error>
+#include <thread>
+#include <vector>
+
+#include <sys/stat.h>
+#include <unistd.h>
+
+#include "Config.h"
+#include "common/FileSystem.h"
+#include "common/Path.h"
+
+#include "arm64/microVU_ProgCache-arm64.h"
+#include "EECycleRate.h"
+
+// kMvuCompilerAbiVersion lives in microVU-arm64.h, but that header
+// also #includes the .inl files at the bottom — including it from
+// a test TU collides with libpcsx2.a's emitted bodies. Mirror the
+// constant here; a future bump must keep the two in sync. Drift is
+// caught directly by `mirror_matches_production_abi_version` below
+// (which compares this against the linkable accessor
+// mVUProgCache::GetCompilerAbiVersion()), with a clear message.
+namespace pcsx2_test
+{
+	static constexpr u32 kMvuCompilerAbiVersionMirror = 72;
+}
+
+namespace
+{
+	// Mirrors of the layouts in microVU_ProgCache-arm64.inl, so the tests can
+	// read and poison packs without a backdoor in production. If the
+	// production layout drifts, the round trips below fail.
+#pragma pack(push, 1)
+	struct PackHeaderMirror
+	{
+		u32           magic;
+		u32           formatVersion;
+		u32           compilerAbiVersion;
+		u32           vuIndex;
+		XXH128_hash_t optionsSentinel;
+		char          archTag[16];
+		u64           buildTag;
+		u32           pageSize;
+		u32           layoutStamp;
+	};
+	struct RecordHeaderMirror
+	{
+		u32           magic;
+		u8            kind;
+		u8            tier;
+		u8            reserved[2];
+		u32           length;
+		u32           reserved2;
+		XXH128_hash_t hash;
+		u64           checksum;
+	};
+#pragma pack(pop)
+	static_assert(sizeof(PackHeaderMirror) == 64, "PackHeader mirror drifted");
+	static_assert(sizeof(RecordHeaderMirror) == 40, "RecordHeader mirror drifted");
+
+	constexpr u32 kPackMagicMirror = 0x4B415056u; // 'VPAK'
+	constexpr u8 kRecordBody = 2;
+
+	XXH128_hash_t Hash(u64 lo, u64 hi)
+	{
+		XXH128_hash_t h;
+		h.low64 = lo;
+		h.high64 = hi;
+		return h;
+	}
+
+	// A fresh temporary cache folder for the test, removed with everything under it.
+	class TempCacheRoot
+	{
+	public:
+		TempCacheRoot()
+		{
+			char tmpl[] = "/tmp/progcache_ver_XXXXXX";
+			char* p = ::mkdtemp(tmpl);
+			EXPECT_NE(p, nullptr) << "mkdtemp failed: " << std::strerror(errno);
+			m_root = p ? p : std::string();
+			m_prev_cache = EmuFolders::Cache;
+			EmuFolders::Cache = m_root;
+		}
+		~TempCacheRoot()
+		{
+			mVUProgCache::ResetForTest(0);
+			mVUProgCache::ResetForTest(1);
+			mVUProgCache::SetTitle("", 0);
+			EmuFolders::Cache = m_prev_cache;
+			// (an empty root would make the removal below start at "/")
+			if (m_root.empty())
+				return;
+			std::error_code ec;
+			std::filesystem::remove_all(m_root, ec);
+		}
+		const std::string& root() const { return m_root; }
+		std::string jit() const { return Path::Combine(m_root, "vu_jit"); }
+		std::string packs() const { return Path::Combine(jit(), "packs"); }
+		std::string pack(const char* title, u32 vu, const XXH128_hash_t& sentinel) const
+		{
+			char name[64];
+			std::snprintf(name, sizeof(name), "vu%u-%016llx%016llx.pack", vu,
+				static_cast<unsigned long long>(sentinel.high64), static_cast<unsigned long long>(sentinel.low64));
+			return Path::Combine(Path::Combine(packs(), title), name);
+		}
+	private:
+		std::string m_root;
+		std::string m_prev_cache;
+	};
+
+	// Stores a record of `size` bytes, all `fill`, under `hash`.
+	void PutRecord(u32 vu, const XXH128_hash_t& hash, u8 fill, size_t size = 64)
+	{
+		const std::vector<u8> bytes(size, fill);
+		mVUProgCache::TestStoreRecord(vu, hash, bytes.data(), bytes.size());
+	}
+
+	bool ReadBack(u32 vu, const XXH128_hash_t& hash, u8 fill)
+	{
+		std::vector<u8> out;
+		if (!mVUProgCache::TestReadRecord(vu, hash, out) || out.empty())
+			return false;
+		return out[0] == fill;
+	}
+
+	// The records of a pack file, in order (kind, hash, length); stops at the first one that does not fit.
+	struct Rec
+	{
+		u8 kind;
+		XXH128_hash_t hash;
+		u32 length;
+	};
+	std::vector<Rec> Records(const std::string& path, PackHeaderMirror* header = nullptr)
+	{
+		std::vector<Rec> out;
+		auto bytes = FileSystem::ReadBinaryFile(path.c_str());
+		if (!bytes.has_value() || bytes->size() < sizeof(PackHeaderMirror))
+			return out;
+		if (header)
+			std::memcpy(header, bytes->data(), sizeof(*header));
+		size_t off = sizeof(PackHeaderMirror);
+		while (bytes->size() - off >= sizeof(RecordHeaderMirror))
+		{
+			RecordHeaderMirror h;
+			std::memcpy(&h, bytes->data() + off, sizeof(h));
+			if (h.length > bytes->size() - off - sizeof(h))
+				break;
+			out.push_back({h.kind, h.hash, h.length});
+			off += sizeof(h) + h.length;
+		}
+		return out;
+	}
+
+	void SetAgeDays(const std::string& path, int days)
+	{
+		std::error_code ec;
+		std::filesystem::last_write_time(path, std::filesystem::file_time_type::clock::now() - std::chrono::hours(24 * days), ec);
+		ASSERT_FALSE(ec) << path;
+	}
+}
+
+// 1. Init writes nothing; the first flush writes the pack, its header the running build's.
+TEST(ProgCachePack, nothing_is_written_until_there_is_something_to_write)
+{
+	TempCacheRoot tmp;
+	const XXH128_hash_t sentinel = Hash(0xAAAAAAAAAAAAAAAAull, 0xBBBBBBBBBBBBBBBBull);
+	mVUProgCache::InitWithSentinel(1, sentinel);
+	auto stats = mVUProgCache::GetStats(1);
+	EXPECT_TRUE(stats.initialized);
+	EXPECT_TRUE(stats.enabled);
+	EXPECT_EQ(stats.entries, 0u);
+	mVUProgCache::TestWaitForPreload(1);
+	const std::string path = tmp.pack("_", 1, sentinel);
+	EXPECT_EQ(mVUProgCache::TestPackPath(1), path);
+	EXPECT_FALSE(FileSystem::FileExists(path.c_str())) << "an empty cache wrote a file";
+
+	PutRecord(1, Hash(1, 2), 0x11);
+	EXPECT_FALSE(FileSystem::FileExists(path.c_str())) << "storing is RAM only";
+	mVUProgCache::TestFlush(1);
+	PackHeaderMirror hdr{};
+	const std::vector<Rec> recs = Records(path, &hdr);
+	ASSERT_EQ(recs.size(), 1u);
+	EXPECT_EQ(recs[0].kind, kRecordBody);
+	EXPECT_EQ(hdr.magic, kPackMagicMirror);
+	EXPECT_EQ(hdr.formatVersion, mVUProgCache::kProgCacheFormatVersion);
+	EXPECT_EQ(hdr.compilerAbiVersion, pcsx2_test::kMvuCompilerAbiVersionMirror);
+	EXPECT_EQ(hdr.vuIndex, 1u);
+	EXPECT_EQ(hdr.optionsSentinel.low64, sentinel.low64);
+	EXPECT_EQ(hdr.optionsSentinel.high64, sentinel.high64);
+	EXPECT_STREQ(hdr.archTag, "arm64-jit");
+
+	// A new process loads it.
+	mVUProgCache::ResetForTest(1);
+	mVUProgCache::InitWithSentinel(1, sentinel);
+	mVUProgCache::TestWaitForPreload(1);
+	EXPECT_EQ(mVUProgCache::GetStats(1).loadedRecords, 1u);
+	EXPECT_TRUE(ReadBack(1, Hash(1, 2), 0x11));
+}
+
+TEST(ProgCachePack, mirror_matches_production_abi_version)
+{
+	EXPECT_EQ(pcsx2_test::kMvuCompilerAbiVersionMirror, mVUProgCache::GetCompilerAbiVersion())
+		<< "kMvuCompilerAbiVersionMirror in this test is out of date: update it to the value in microVU-arm64.h";
+}
+
+// 2. A different sentinel gets a pack of its own, and the first one is still there when its sentinel comes
+//    back. The GameDB sets the VU clamp modes and gamefixes per game, so two games played in turn can have
+//    two sentinels; neither may throw the other's cache away.
+TEST(ProgCachePack, optionsSentinel_change_keeps_each_cache)
+{
+	TempCacheRoot tmp;
+	const XXH128_hash_t s_a = Hash(0xDEAD0000ull, 0xBEEF0000ull), s_b = Hash(0x1234ull, 0x5678ull);
+	const XXH128_hash_t prog = Hash(0x0A0A0A0Aull, 0x0B0B0B0Bull);
+
+	mVUProgCache::InitWithSentinel(1, s_a);
+	PutRecord(1, prog, 0x2A);
+	mVUProgCache::ResetForTest(1); // (writes it)
+
+	mVUProgCache::InitWithSentinel(1, s_b);
+	mVUProgCache::TestWaitForPreload(1);
+	EXPECT_EQ(mVUProgCache::GetStats(1).entries, 0u) << "s_b's cache starts empty";
+	PutRecord(1, Hash(7, 7), 0x07);
+	mVUProgCache::ResetForTest(1);
+
+	mVUProgCache::InitWithSentinel(1, s_a);
+	mVUProgCache::TestWaitForPreload(1);
+	EXPECT_TRUE(ReadBack(1, prog, 0x2A)) << "s_a's cache must survive a session under s_b";
+	EXPECT_FALSE(mVUProgCache::TestHasEntry(1, Hash(7, 7)));
+	EXPECT_EQ(Records(tmp.pack("_", 1, s_a)).size(), 1u);
+	EXPECT_EQ(Records(tmp.pack("_", 1, s_b)).size(), 1u);
+}
+
+// 2b. The same for titles: a pack per game, under a directory named by its serial and CRC.
+TEST(ProgCachePack, each_title_has_its_own_pack)
+{
+	TempCacheRoot tmp;
+	const XXH128_hash_t sentinel = Hash(5, 6), prog = Hash(0x77, 0x88);
+
+	mVUProgCache::SetTitle("SLUS-21065", 0xA1B2C3D4u);
+	mVUProgCache::InitWithSentinel(1, sentinel);
+	EXPECT_EQ(mVUProgCache::TestPackPath(1), tmp.pack("SLUS-21065_A1B2C3D4", 1, sentinel));
+	PutRecord(1, prog, 0x31);
+	mVUProgCache::ResetForTest(1);
+
+	mVUProgCache::SetTitle("SCES 50/01", 0x1u); // (characters a file name cannot hold become '_')
+	mVUProgCache::InitWithSentinel(1, sentinel);
+	EXPECT_EQ(mVUProgCache::TestPackPath(1), tmp.pack("SCES_50_01_00000001", 1, sentinel));
+	mVUProgCache::TestWaitForPreload(1);
+	EXPECT_FALSE(mVUProgCache::TestHasEntry(1, prog)) << "another game's records";
+	mVUProgCache::ResetForTest(1);
+
+	mVUProgCache::SetTitle("SLUS-21065", 0xA1B2C3D4u);
+	mVUProgCache::InitWithSentinel(1, sentinel);
+	mVUProgCache::TestWaitForPreload(1);
+	EXPECT_TRUE(ReadBack(1, prog, 0x31));
+}
+
+// 3. A header that differs in any field loads nothing, and the next write starts the file again.
+TEST(ProgCachePack, a_pack_of_another_format_is_replaced)
+{
+	struct Poison
+	{
+		const char* what;
+		void (*apply)(PackHeaderMirror&);
+	};
+	const Poison poisons[] = {
+		{"magic", [](PackHeaderMirror& h) { h.magic = 0xDEADBEEFu; }},
+		{"formatVersion", [](PackHeaderMirror& h) { h.formatVersion = mVUProgCache::kProgCacheFormatVersion - 1; }},
+		{"compilerAbiVersion", [](PackHeaderMirror& h) { h.compilerAbiVersion ^= 0x100u; }},
+		{"vuIndex", [](PackHeaderMirror& h) { h.vuIndex = 0; }},
+		{"archTag", [](PackHeaderMirror& h) { std::strncpy(h.archTag, "x86-64", sizeof(h.archTag)); }},
+		{"buildTag", [](PackHeaderMirror& h) { h.buildTag ^= 1u; }},
+		{"pageSize", [](PackHeaderMirror& h) { h.pageSize = h.pageSize == 4096 ? 16384 : 4096; }},
+		{"layoutStamp", [](PackHeaderMirror& h) { h.layoutStamp ^= 0x10u; }},
+	};
+	for (const Poison& poison : poisons)
+	{
+		TempCacheRoot tmp;
+		const XXH128_hash_t sentinel = Hash(0x7777ull, 0x8888ull);
+		mVUProgCache::InitWithSentinel(1, sentinel);
+		PutRecord(1, Hash(1, 1), 0x01);
+		mVUProgCache::ResetForTest(1);
+
+		const std::string path = tmp.pack("_", 1, sentinel);
+		auto bytes = FileSystem::ReadBinaryFile(path.c_str());
+		ASSERT_TRUE(bytes.has_value()) << poison.what;
+		PackHeaderMirror hdr;
+		std::memcpy(&hdr, bytes->data(), sizeof(hdr));
+		poison.apply(hdr);
+		std::memcpy(bytes->data(), &hdr, sizeof(hdr));
+		ASSERT_TRUE(FileSystem::WriteBinaryFile(path.c_str(), bytes->data(), bytes->size()));
+
+		mVUProgCache::InitWithSentinel(1, sentinel);
+		mVUProgCache::TestWaitForPreload(1);
+		auto stats = mVUProgCache::GetStats(1);
+		EXPECT_EQ(stats.otherFormat, 1u) << poison.what;
+		EXPECT_EQ(stats.entries, 0u) << poison.what;
+		EXPECT_FALSE(mVUProgCache::TestHasEntry(1, Hash(1, 1))) << poison.what;
+
+		PutRecord(1, Hash(2, 2), 0x02);
+		mVUProgCache::TestFlush(1);
+		PackHeaderMirror now{};
+		const std::vector<Rec> recs = Records(path, &now);
+		EXPECT_EQ(recs.size(), 1u) << poison.what << ": the old records went with the old format";
+		EXPECT_EQ(now.magic, kPackMagicMirror) << poison.what;
+		EXPECT_EQ(now.formatVersion, mVUProgCache::kProgCacheFormatVersion) << poison.what;
+		EXPECT_EQ(now.vuIndex, 1u) << poison.what;
+	}
+}
+
+// 4. A log that ends in a broken record (a write cut short, a flipped byte) keeps what comes before it,
+//    and the next write cuts the broken record off, so what it appends can be read.
+TEST(ProgCachePack, a_broken_record_ends_the_log_and_is_cut_off)
+{
+	TempCacheRoot tmp;
+	const XXH128_hash_t sentinel = Hash(0xC0FFEEull, 0xBBull);
+	mVUProgCache::InitWithSentinel(1, sentinel);
+	PutRecord(1, Hash(1, 1), 0x01);
+	PutRecord(1, Hash(2, 2), 0x02);
+	mVUProgCache::TestFlush(1);
+	PutRecord(1, Hash(3, 3), 0x03, 200);
+	mVUProgCache::ResetForTest(1);
+	const std::string path = tmp.pack("_", 1, sentinel);
+	ASSERT_EQ(Records(path).size(), 3u);
+
+	// The last record's last byte flips: its checksum fails.
+	auto bytes = FileSystem::ReadBinaryFile(path.c_str());
+	ASSERT_TRUE(bytes.has_value());
+	bytes->back() ^= 0xFF;
+	ASSERT_TRUE(FileSystem::WriteBinaryFile(path.c_str(), bytes->data(), bytes->size()));
+
+	mVUProgCache::InitWithSentinel(1, sentinel);
+	mVUProgCache::TestWaitForPreload(1);
+	auto stats = mVUProgCache::GetStats(1);
+	EXPECT_EQ(stats.tornTails, 1u);
+	EXPECT_EQ(stats.loadedRecords, 2u);
+	EXPECT_TRUE(ReadBack(1, Hash(1, 1), 0x01));
+	EXPECT_TRUE(ReadBack(1, Hash(2, 2), 0x02));
+	EXPECT_FALSE(mVUProgCache::TestHasEntry(1, Hash(3, 3)));
+
+	PutRecord(1, Hash(4, 4), 0x04);
+	mVUProgCache::ResetForTest(1);
+	mVUProgCache::InitWithSentinel(1, sentinel);
+	mVUProgCache::TestWaitForPreload(1);
+	stats = mVUProgCache::GetStats(1);
+	EXPECT_EQ(stats.tornTails, 0u) << "the broken record was not cut off";
+	EXPECT_EQ(stats.loadedRecords, 3u);
+	EXPECT_TRUE(ReadBack(1, Hash(4, 4), 0x04));
+}
+
+// 4b. A record written again supersedes the earlier one, in RAM and in the next session; once most of the
+//     file is superseded records, the writer writes it again whole.
+TEST(ProgCachePack, the_newest_record_wins_and_a_mostly_dead_pack_is_rewritten)
+{
+	TempCacheRoot tmp;
+	const XXH128_hash_t sentinel = Hash(0x5Eull, 0x5Full), prog = Hash(9, 9);
+	mVUProgCache::InitWithSentinel(1, sentinel);
+	const size_t big = 300u << 10;
+	for (u8 round = 1; round <= 6; round++)
+	{
+		PutRecord(1, prog, round, big);
+		mVUProgCache::TestFlush(1);
+	}
+	EXPECT_GE(mVUProgCache::GetStats(1).rewrites, 1u) << "1.5 MiB of file for 300 KiB of records";
+	const s64 size = FileSystem::GetPathFileSize(tmp.pack("_", 1, sentinel).c_str());
+	EXPECT_LT(size, static_cast<s64>(3 * big)) << "the rewrite left superseded records behind";
+	mVUProgCache::ResetForTest(1);
+
+	mVUProgCache::InitWithSentinel(1, sentinel);
+	mVUProgCache::TestWaitForPreload(1);
+	EXPECT_TRUE(ReadBack(1, prog, 6));
+}
+
+// 4c. Of a pack past the RAM cap (one an older build let grow without bound) the read keeps the newest
+//     records that fit, which are at the end of the log, and the writer's next pass rewrites the file from
+//     them, under the cap.
+TEST(ProgCachePack, a_pack_past_the_ram_cap_keeps_its_newest_records)
+{
+	TempCacheRoot tmp;
+	const XXH128_hash_t sentinel = Hash(0xCAull, 0xFEull);
+	mVUProgCache::InitWithSentinel(1, sentinel);
+	for (u64 n = 1; n <= 8; n++)
+	{
+		PutRecord(1, Hash(n, n), static_cast<u8>(n), 64u << 10);
+		mVUProgCache::TestFlush(1); // (one pass each: the file holds them in order)
+	}
+	mVUProgCache::ResetForTest(1);
+	const std::string path = tmp.pack("_", 1, sentinel);
+	ASSERT_EQ(Records(path).size(), 8u);
+
+	const size_t cap = 200u << 10;
+	mVUProgCache::TestSetRamCap(1, cap);
+	mVUProgCache::InitWithSentinel(1, sentinel);
+	mVUProgCache::TestWaitForPreload(1); // (the read, then a writer pass)
+	auto stats = mVUProgCache::GetStats(1);
+	EXPECT_EQ(stats.ramCapHit, 1u);
+	EXPECT_LE(stats.loadedBytes, cap) << "the read went past the cap";
+	EXPECT_LE(stats.ramBytes, cap);
+	EXPECT_EQ(stats.loadedRecords, 3u);
+	EXPECT_EQ(stats.evicted, 0u) << "the pass dropped records the read had just kept";
+	EXPECT_EQ(stats.rewrites, 1u);
+	const std::vector<Rec> recs = Records(path);
+	ASSERT_EQ(recs.size(), 3u) << "the pass did not rewrite the file from what the read kept";
+	EXPECT_EQ(recs[0].hash.low64, 6u);
+	EXPECT_EQ(recs[2].hash.low64, 8u);
+	EXPECT_LE(FileSystem::GetPathFileSize(path.c_str()), static_cast<s64>(cap));
+	EXPECT_TRUE(ReadBack(1, Hash(6, 6), 6));
+	EXPECT_TRUE(ReadBack(1, Hash(8, 8), 8));
+	EXPECT_FALSE(mVUProgCache::TestHasEntry(1, Hash(5, 5))) << "an older record was read";
+}
+
+// 4c'. A rewrite that fails (a full card, here a folder that takes no new file) is not tried again for the
+//      rest of the session: the writer appends instead of writing the whole pack every pass.
+TEST(ProgCachePack, a_failed_rewrite_is_not_retried_every_pass)
+{
+	TempCacheRoot tmp;
+	const XXH128_hash_t sentinel = Hash(0xC9ull, 0xFEull);
+	mVUProgCache::InitWithSentinel(1, sentinel);
+	for (u64 n = 1; n <= 4; n++)
+		PutRecord(1, Hash(n, n), static_cast<u8>(n), 64u << 10);
+	mVUProgCache::ResetForTest(1);
+	const std::string path = tmp.pack("_", 1, sentinel);
+	const std::string dir(Path::GetDirectory(path));
+	ASSERT_EQ(Records(path).size(), 4u);
+
+	ASSERT_EQ(::chmod(dir.c_str(), 0555), 0);
+	if (::access(dir.c_str(), W_OK) == 0) // (root writes anyway)
+	{
+		::chmod(dir.c_str(), 0755);
+		GTEST_SKIP() << "the folder stays writable";
+	}
+	mVUProgCache::TestSetRamCap(1, 200u << 10);
+	mVUProgCache::InitWithSentinel(1, sentinel);
+	mVUProgCache::TestWaitForPreload(1);
+	EXPECT_EQ(mVUProgCache::GetStats(1).writeFailures, 1u) << "the rewrite was not tried";
+	for (u64 n = 10; n < 13; n++)
+	{
+		PutRecord(1, Hash(n, n), static_cast<u8>(n));
+		mVUProgCache::TestFlush(1);
+	}
+	const auto stats = mVUProgCache::GetStats(1);
+	EXPECT_EQ(stats.writeFailures, 1u) << "the rewrite was tried again";
+	EXPECT_EQ(stats.rewrites, 0u);
+	EXPECT_EQ(Records(path).size(), 7u) << "the passes after it did not append";
+	ASSERT_EQ(::chmod(dir.c_str(), 0755), 0);
+}
+
+// 4d. A session that stores past the cap is brought back under it at the writer's next pass: the entries
+//     used longest ago go, from RAM and from the file, and the ones stored or read last stay.
+TEST(ProgCachePack, the_writer_keeps_the_pack_under_the_cap_and_drops_what_was_used_longest_ago)
+{
+	TempCacheRoot tmp;
+	const XXH128_hash_t sentinel = Hash(0xCBull, 0xFEull);
+	const size_t cap = 256u << 10, size = 40u << 10;
+	mVUProgCache::TestSetRamCap(1, cap);
+	mVUProgCache::InitWithSentinel(1, sentinel);
+	mVUProgCache::TestWaitForPreload(1);
+	for (u64 n = 1; n <= 6; n++)
+	{
+		PutRecord(1, Hash(n, n), static_cast<u8>(n), size);
+		mVUProgCache::TestFlush(1);
+	}
+	EXPECT_EQ(mVUProgCache::GetStats(1).evicted, 0u) << "240 KiB is under the cap";
+	ASSERT_TRUE(ReadBack(1, Hash(1, 1), 1)); // the oldest entry, used again
+
+	PutRecord(1, Hash(7, 7), 7, size);
+	mVUProgCache::TestFlush(1);
+	auto stats = mVUProgCache::GetStats(1);
+	EXPECT_GT(stats.evicted, 0u);
+	EXPECT_LE(stats.ramBytes, cap);
+	const std::string path = tmp.pack("_", 1, sentinel);
+	EXPECT_LE(FileSystem::GetPathFileSize(path.c_str()), static_cast<s64>(cap));
+	EXPECT_TRUE(mVUProgCache::TestHasEntry(1, Hash(7, 7))) << "the newest entry was dropped";
+	EXPECT_TRUE(mVUProgCache::TestHasEntry(1, Hash(1, 1))) << "the entry read last was dropped";
+	EXPECT_FALSE(mVUProgCache::TestHasEntry(1, Hash(2, 2))) << "the entry used longest ago was kept";
+
+	// The file holds them in the order of their last use, so the next session ranks them the same way.
+	mVUProgCache::ResetForTest(1);
+	const std::vector<Rec> recs = Records(path);
+	ASSERT_EQ(recs.size(), 3u);
+	EXPECT_EQ(recs[0].hash.low64, 6u);
+	EXPECT_EQ(recs[1].hash.low64, 1u);
+	EXPECT_EQ(recs[2].hash.low64, 7u);
+	mVUProgCache::TestSetRamCap(1, cap);
+	mVUProgCache::InitWithSentinel(1, sentinel);
+	mVUProgCache::TestWaitForPreload(1);
+	EXPECT_TRUE(ReadBack(1, Hash(7, 7), 7));
+	EXPECT_TRUE(ReadBack(1, Hash(1, 1), 1));
+	EXPECT_FALSE(mVUProgCache::TestHasEntry(1, Hash(2, 2)));
+}
+
+// 4e. Between the writer's passes a session never holds more than twice the cap: what would go past it is
+//     not stored.
+TEST(ProgCachePack, a_session_never_holds_more_than_twice_the_cap)
+{
+	TempCacheRoot tmp;
+	const size_t cap = 128u << 10, size = 40u << 10;
+	mVUProgCache::TestSetRamCap(1, cap);
+	mVUProgCache::InitWithSentinel(1, Hash(0xCCull, 0xFEull));
+	mVUProgCache::TestWaitForPreload(1);
+	for (u64 n = 1; n <= 8; n++)
+	{
+		PutRecord(1, Hash(n, n), static_cast<u8>(n), size);
+		ReadBack(1, Hash(n, n), static_cast<u8>(n));
+	}
+	const auto stats = mVUProgCache::GetStats(1);
+	EXPECT_LE(stats.ramBytes, 2 * cap);
+	EXPECT_GT(stats.storesRefused, 0u);
+}
+
+// 4f. The table's bytes sit in a few large blocks, never a heap block per record. Android's allocator gives
+//     every block above a few KiB mappings of its own, and a process may hold about 65,000 mappings: a
+//     pack of 30,000 records read into a block each took the process down at every boot.
+TEST(ProgCachePack, the_tables_bytes_are_a_few_large_blocks_not_one_per_record)
+{
+	TempCacheRoot tmp;
+	const XXH128_hash_t sentinel = Hash(0xCDull, 0xFEull);
+	constexpr u64 kRecords = 1000;
+	// (24 MiB of records: over VU1's own cap)
+	mVUProgCache::TestSetRamCap(1, 64u << 20);
+	mVUProgCache::InitWithSentinel(1, sentinel);
+	mVUProgCache::TestWaitForPreload(1);
+	for (u64 n = 1; n <= kRecords; n++)
+		PutRecord(1, Hash(n, n), static_cast<u8>(n), 24u << 10);
+	mVUProgCache::TestFlush(1);
+	auto stats = mVUProgCache::GetStats(1);
+	ASSERT_EQ(stats.entries, kRecords);
+	EXPECT_LE(stats.ramBlocks, 16u) << "what the session stored";
+
+	mVUProgCache::ResetForTest(1);
+	mVUProgCache::TestSetRamCap(1, 64u << 20);
+	mVUProgCache::InitWithSentinel(1, sentinel);
+	mVUProgCache::TestWaitForPreload(1);
+	stats = mVUProgCache::GetStats(1);
+	ASSERT_EQ(stats.loadedRecords, kRecords);
+	EXPECT_LE(stats.ramBlocks, 16u) << "what the read loaded";
+	EXPECT_TRUE(ReadBack(1, Hash(kRecords, kRecords), static_cast<u8>(kRecords)));
+}
+
+// 5. Leftovers: the layouts before packs (vu0/, vu1/ and the vu{0,1}.stale.* they set aside), a write cut
+//    short, and packs unused for 60 days. A pack used 10 days ago stays, and so does the tripwire's memory.
+TEST(ProgCachePack, leftovers_and_unused_packs_are_deleted)
+{
+	TempCacheRoot tmp;
+	const auto make_file = [](const std::string& dir, const char* name) {
+		ASSERT_TRUE(FileSystem::EnsureDirectoryExists(dir.c_str(), true));
+		ASSERT_TRUE(FileSystem::WriteStringToFile(Path::Combine(dir, name).c_str(), "x"));
+	};
+	const std::string jit = tmp.jit();
+	make_file(Path::Combine(jit, "vu1.stale.123"), "INDEX");
+	make_file(Path::Combine(jit, "vu0"), "VERSION");
+	make_file(Path::Combine(Path::Combine(jit, "vu1"), "0123456789abcdef0123456789abcdef"), "INDEX");
+	make_file(jit, "vuaot_tripped.txt");
+	const std::string game = Path::Combine(tmp.packs(), "SLUS-00001_00000000");
+	const std::string other = Path::Combine(tmp.packs(), "SLUS-00002_00000000");
+	make_file(game, "vu1-00000000000000000000000000000001.pack");
+	make_file(game, "vu1-00000000000000000000000000000002.pack");
+	make_file(game, "vu1-00000000000000000000000000000002.pack.tmp");
+	make_file(other, "vu0-00000000000000000000000000000003.pack");
+	SetAgeDays(Path::Combine(game, "vu1-00000000000000000000000000000001.pack"), 10);
+	SetAgeDays(Path::Combine(game, "vu1-00000000000000000000000000000002.pack"), 61);
+	SetAgeDays(Path::Combine(game, "vu1-00000000000000000000000000000002.pack.tmp"), 1);
+	SetAgeDays(Path::Combine(other, "vu0-00000000000000000000000000000003.pack"), 90);
+
+	mVUProgCache::InitWithSentinel(1, Hash(1, 0));
+	mVUProgCache::TestWaitForPreload(1);
+
+	EXPECT_FALSE(FileSystem::DirectoryExists(Path::Combine(jit, "vu1.stale.123").c_str()));
+	EXPECT_FALSE(FileSystem::DirectoryExists(Path::Combine(jit, "vu0").c_str()));
+	EXPECT_FALSE(FileSystem::DirectoryExists(Path::Combine(jit, "vu1").c_str()));
+	EXPECT_TRUE(FileSystem::FileExists(Path::Combine(game, "vu1-00000000000000000000000000000001.pack").c_str())) << "used 10 days ago";
+	EXPECT_FALSE(FileSystem::FileExists(Path::Combine(game, "vu1-00000000000000000000000000000002.pack").c_str())) << "unused for 61 days";
+	EXPECT_FALSE(FileSystem::FileExists(Path::Combine(game, "vu1-00000000000000000000000000000002.pack.tmp").c_str()));
+	EXPECT_FALSE(FileSystem::DirectoryExists(other.c_str())) << "a title with no pack left";
+	EXPECT_TRUE(FileSystem::FileExists(Path::Combine(jit, "vuaot_tripped.txt").c_str())) << "the tripwire's memory stays";
+	EXPECT_GE(mVUProgCache::GetStats(1).leftoverFiles, 6u);
+}
+
+// Opening a pack marks its use, so a pack played now and then is not taken for an unused one.
+TEST(ProgCachePack, opening_a_pack_marks_its_use)
+{
+	TempCacheRoot tmp;
+	const XXH128_hash_t sentinel = Hash(3, 4);
+	mVUProgCache::InitWithSentinel(1, sentinel);
+	PutRecord(1, Hash(1, 1), 1);
+	mVUProgCache::ResetForTest(1);
+	const std::string path = tmp.pack("_", 1, sentinel);
+	SetAgeDays(path, 59);
+	mVUProgCache::InitWithSentinel(1, sentinel);
+	mVUProgCache::TestWaitForPreload(1);
+	std::error_code ec;
+	const auto age = std::filesystem::file_time_type::clock::now() - std::filesystem::last_write_time(path, ec);
+	ASSERT_FALSE(ec);
+	// In minutes, as a plain integer: libc++'s file clock counts in __int128, which gtest cannot print.
+	EXPECT_LT(std::chrono::duration_cast<std::chrono::minutes>(age).count(), 60);
+}
+
+// The pack being opened is never taken for an unused one, however old its time says it is: the leftover
+// pass and the read run side by side, and the read marks the use only once it is done.
+TEST(ProgCachePack, the_pack_being_opened_is_not_deleted)
+{
+	TempCacheRoot tmp;
+	const XXH128_hash_t sentinel = Hash(8, 9);
+	mVUProgCache::InitWithSentinel(1, sentinel);
+	PutRecord(1, Hash(1, 1), 0x5A);
+	mVUProgCache::ResetForTest(1);
+	const std::string path = tmp.pack("_", 1, sentinel);
+	SetAgeDays(path, 90);
+
+	mVUProgCache::TestHoldLoad(1, true); // (the read waits, with the file read, until the leftover pass is over)
+	mVUProgCache::InitWithSentinel(1, sentinel);
+	for (int i = 0; i < 2000 && !mVUProgCache::TestLoadIsHeld(1); i++)
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	PutRecord(1, Hash(2, 2), 0x5B);
+	std::this_thread::sleep_for(std::chrono::milliseconds(50)); // (the writer's leftover pass runs first)
+	mVUProgCache::TestHoldLoad(1, false);
+	mVUProgCache::TestWaitForPreload(1);
+	EXPECT_TRUE(FileSystem::FileExists(path.c_str()));
+	EXPECT_TRUE(ReadBack(1, Hash(1, 1), 0x5A));
+	mVUProgCache::ResetForTest(1);
+	EXPECT_EQ(Records(path).size(), 2u);
+}
+
+// 6. Empty EmuFolders::Cache (e.g. test harness with no VMManager init) disables the cache silently. Init
+//    must NOT touch /tmp or anywhere unsolicited.
+TEST(ProgCachePack, empty_emu_folders_disables_cache)
+{
+	const std::string prev = EmuFolders::Cache;
+	EmuFolders::Cache.clear();
+	mVUProgCache::ResetForTest(1);
+
+	mVUProgCache::InitWithSentinel(1, XXH128_hash_t{});
+	const auto stats = mVUProgCache::GetStats(1);
+	EXPECT_TRUE(stats.initialized);
+	EXPECT_FALSE(stats.enabled) << "empty EmuFolders::Cache must result in enabled=false";
+	EXPECT_EQ(mVUProgCache::TestPackPath(1), "");
+
+	mVUProgCache::ResetForTest(1);
+	EmuFolders::Cache = prev;
+}
+
+// ---------------------------------------------------------------------------
+// EE cycle rate in the options sentinel: a VU0-only code-generation input.
+//
+// mVUtestCycles applies the EE nominal-rate adjustment when compiling VU0 and
+// only VU0. VU0's identity must therefore move with the effective rate (its
+// emitted cycle counts change), and VU1's must not, or a rate change would
+// evict the whole VU1 disk cache for nothing.
+// ---------------------------------------------------------------------------
+
+namespace
+{
+	XXH128_hash_t SentinelAtEffectiveRate(u32 vu_index, int rate)
+	{
+		EmuConfig.Speedhacks.EECycleRate = static_cast<s8>(rate);
+		EECycleRate::SyncToConfigured();
+		XXH128_hash_t h{};
+		EXPECT_TRUE(mVUProgCache::TestBuildSentinelForIndex(vu_index, &h));
+		return h;
+	}
+
+	bool SameHash(const XXH128_hash_t& a, const XXH128_hash_t& b)
+	{
+		return a.low64 == b.low64 && a.high64 == b.high64;
+	}
+} // namespace
+
+TEST(MvuOptionsSentinelEECycleRate, Vu0IdentityFollowsTheEffectiveRate)
+{
+	const s8 saved = EmuConfig.Speedhacks.EECycleRate;
+
+	const XXH128_hash_t at0  = SentinelAtEffectiveRate(0, 0);
+	const XXH128_hash_t atm1 = SentinelAtEffectiveRate(0, -1);
+	const XXH128_hash_t atm2 = SentinelAtEffectiveRate(0, -2);
+	const XXH128_hash_t at0_again = SentinelAtEffectiveRate(0, 0);
+
+	EmuConfig.Speedhacks.EECycleRate = saved;
+	EECycleRate::SyncToConfigured();
+
+	EXPECT_FALSE(SameHash(at0, atm1)) << "VU0 emits different cycle counts at -1; its identity must say so";
+	EXPECT_FALSE(SameHash(atm1, atm2));
+	EXPECT_TRUE(SameHash(at0, at0_again)) << "the sentinel is not a pure function of the config";
+}
+
+TEST(MvuOptionsSentinelEECycleRate, Vu1IdentityIsInvariant)
+{
+	const s8 saved = EmuConfig.Speedhacks.EECycleRate;
+
+	const XXH128_hash_t at0  = SentinelAtEffectiveRate(1, 0);
+	const XXH128_hash_t atm1 = SentinelAtEffectiveRate(1, -1);
+	const XXH128_hash_t atm2 = SentinelAtEffectiveRate(1, -2);
+	const XXH128_hash_t atp3 = SentinelAtEffectiveRate(1, 3);
+
+	EmuConfig.Speedhacks.EECycleRate = saved;
+	EECycleRate::SyncToConfigured();
+
+	EXPECT_TRUE(SameHash(at0, atm1)) << "VU1 program identity moved with the EE cycle rate";
+	EXPECT_TRUE(SameHash(at0, atm2));
+	EXPECT_TRUE(SameHash(at0, atp3));
+}

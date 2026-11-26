@@ -1,0 +1,718 @@
+// SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
+// SPDX-License-Identifier: GPL-3.0+
+
+// Pins which draws the run machine merges and what their rows say (GS/Renderers/Common/GSRunsPolicy.h).
+//
+// The run program reproduces a draw's classic program for one state set, so the property that matters is the
+// refusals: every pixel-shader bit outside that set must keep the draw on the classic path, one bit at a time, and
+// every blend the ways do not reproduce must too. The ways themselves are checked against the run pipeline's blend
+// equation (ONE, INV_SRC1_COLOR / ONE, ZERO, or SRC1_COLOR, INV_SRC1_COLOR for the blend unit's own ways): a way is right
+// when that equation, fed the second output the run program writes for it, gives what the classic pipeline's blend gives.
+//
+// Rides gs_vertex_tests -- the policy is header-only, so it needs no extra linkage.
+
+#include "GS/Renderers/Common/GSRunsPolicy.h"
+
+#include <gtest/gtest.h>
+
+#include <cstring>
+
+namespace
+{
+	using namespace GSRunsPolicy;
+
+	int s_rt, s_ds;
+
+	GSHWDrawConfig Zeroed()
+	{
+		GSHWDrawConfig c;
+		std::memset(static_cast<void*>(&c), 0, sizeof(c));
+		c.colclip_mode = GSHWDrawConfig::ColClipMode::NoModify;
+		c.destination_alpha = GSHWDrawConfig::DestinationAlphaMode::Off;
+		c.tex_hazard = GSHWDrawConfig::TEX_HAZARD_NONE;
+		c.colormask.logic_op = GSAlphaBitLogicOp::Off;
+		c.date_copy = GSAlphaBitLogicOp::NoDateCopy;
+		c.topology = GSHWDrawConfig::Topology::Triangle;
+		c.indices_per_prim = 3;
+		c.rt = reinterpret_cast<GSTexture*>(&s_rt);
+		c.ds = reinterpret_cast<GSTexture*>(&s_ds);
+		return c;
+	}
+
+	// A modulated, textured draw blended Cs * As + Cd * (1 - As): the storm pass's commonest shape.
+	GSHWDrawConfig Way0()
+	{
+		GSHWDrawConfig c = Zeroed();
+		c.ps.tfx = 0;
+		c.ps.tcc = 1;
+		c.ps.iip = 1;
+		c.ps.blend_a = 0;
+		c.ps.blend_b = 2;
+		c.ps.blend_c = 0;
+		c.ps.blend_d = 2;
+		c.ps.blend_mix = 1;
+		c.blend = GSHWDrawConfig::BlendState(true, GSDevice::CONST_ONE, GSDevice::INV_SRC1_COLOR, GSDevice::OP_ADD,
+			GSDevice::CONST_ONE, GSDevice::CONST_ZERO, false, 0);
+		c.colormask.wrgba = 0xF;
+		return c;
+	}
+
+	TextureFacts Rgba8()
+	{
+		TextureFacts t;
+		t.present = true;
+		t.rgba8 = true;
+		return t;
+	}
+
+	// The run pipeline's colour equation on one channel: src + dst * (1 - second).
+	float RunBlend(float src, float second, float dst) { return src + dst * (1.0f - second); }
+} // namespace
+
+TEST(GSRunsPolicy, PlainBlendedDrawIsWayZero)
+{
+	const Draw d = Classify(Way0(), Rgba8(), false);
+	ASSERT_EQ(d.why, Refusal::None);
+	EXPECT_EQ(d.way, 0u);
+	EXPECT_EQ(Field(d.flags, STATE_TFX), 0u);
+	EXPECT_EQ(Field(d.flags, STATE_TCC), 1u);
+	EXPECT_EQ(Field(d.flags, STATE_IIP), 1u);
+	EXPECT_EQ(Field(d.flags, STATE_WAY), 0u);
+	EXPECT_EQ(Field(d.flags, STATE_LOD), LOD_NONE);
+}
+
+// Every PS selector bit outside the run program's set refuses the draw, one bit at a time.
+TEST(GSRunsPolicy, EveryOtherPixelShaderBitRefuses)
+{
+	const GSHWDrawConfig::PSSelector& allowed = AllowedPS();
+	for (u32 word = 0; word < 2; word++)
+	{
+		const u64 mask = word ? allowed.key_hi : allowed.key_lo;
+		for (u32 bit = 0; bit < 64; bit++)
+		{
+			if (mask >> bit & 1)
+				continue;
+			GSHWDrawConfig c = Way0();
+			(word ? c.ps.key_hi : c.ps.key_lo) |= 1ull << bit;
+			// The colour-clip and ROV bits are refused earlier, as a road.
+			const Refusal why = Classify(c, Rgba8(), false).why;
+			EXPECT_TRUE(why == Refusal::PS || why == Refusal::Road) << "word " << word << " bit " << bit;
+		}
+	}
+}
+
+TEST(GSRunsPolicy, TheCheapRefusalsAgreeWithClassify)
+{
+	// What OutsidePS and OutsideVS refuse, before Classify runs, Classify refuses too.
+	GSHWDrawConfig c = Way0();
+	EXPECT_FALSE(OutsidePS(c.ps));
+	EXPECT_FALSE(OutsideVS(c.vs));
+	for (u32 bit = 0; bit < 9; bit++)
+	{
+		c = Way0();
+		c.vs.key |= static_cast<u16>(1u << bit);
+		if (OutsideVS(c.vs))
+			EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Topo) << "bit " << bit;
+	}
+	c = Way0();
+	c.vs.fst = 1;
+	EXPECT_TRUE(OutsideVS(c.vs));
+	c = Way0();
+	c.vs.point_size = 1;
+	EXPECT_TRUE(OutsideVS(c.vs));
+	c = Way0();
+	c.vs.sprite_edge_clamp = 1;
+	EXPECT_TRUE(OutsideVS(c.vs));
+	c = Way0();
+	c.ps.fst = 1;
+	EXPECT_TRUE(OutsidePS(c.ps));
+	EXPECT_NE(Classify(c, Rgba8(), false).why, Refusal::None);
+}
+
+TEST(GSRunsPolicy, RegionClampAndPaletteRefuse)
+{
+	GSHWDrawConfig c = Way0();
+	c.ps.wms = 2;
+	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::PS);
+	c = Way0();
+	c.ps.wmt = 3;
+	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::PS);
+	c = Way0();
+	c.pal = reinterpret_cast<GSTexture*>(&s_rt);
+	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::PS);
+}
+
+TEST(GSRunsPolicy, AnythingBesidesOnePlainDrawRefuses)
+{
+	GSHWDrawConfig c = Way0();
+	c.require_one_barrier = true;
+	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Road);
+	c = Way0();
+	c.blend_multi_pass.enable = true;
+	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Road);
+	c = Way0();
+	c.alpha_second_pass.enable = true;
+	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Road);
+	c = Way0();
+	c.destination_alpha = GSHWDrawConfig::DestinationAlphaMode::Stencil;
+	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Road);
+	c = Way0();
+	c.rt = nullptr;
+	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Road);
+	// A draw without a depth buffer is drawn in the pass's (the emitter decides with or without its attachment).
+	c = Way0();
+	c.ds = nullptr;
+	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::None);
+	c = Way0();
+	EXPECT_EQ(Classify(c, Rgba8(), true).why, Refusal::Road) << "a colour-clip target in progress";
+	c = Way0();
+	c.topology = GSHWDrawConfig::Topology::Line;
+	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Topo);
+	c = Way0();
+	c.vs.fst = 1;
+	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Topo);
+	// Sprites the classic path expands in its vertex program are accepted; lines and points are not.
+	c = Way0();
+	c.vs.expand = GSHWDrawConfig::VSExpand::Sprite;
+	c.indices_per_prim = 6;
+	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::None);
+	c.vs.expand = GSHWDrawConfig::VSExpand::Line;
+	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Topo);
+	c.vs.expand = GSHWDrawConfig::VSExpand::Point;
+	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Topo);
+}
+
+TEST(GSRunsPolicy, TextureMustBeSampledAsTheClassicProgramDoes)
+{
+	TextureFacts t = Rgba8();
+	t.is_target = true;
+	EXPECT_EQ(Classify(Way0(), t, false).why, Refusal::Tex);
+	t = Rgba8();
+	t.rgba8 = false;
+	EXPECT_EQ(Classify(Way0(), t, false).why, Refusal::Tex);
+	EXPECT_EQ(Classify(Way0(), TextureFacts(), false).why, Refusal::Tex);
+	// An untextured draw needs no texture.
+	GSHWDrawConfig c = Way0();
+	c.ps.tfx = 4;
+	EXPECT_EQ(Classify(c, TextureFacts(), false).why, Refusal::None);
+}
+
+// tfx.glsl's sample_c takes the hardware's lod before the manual one.
+TEST(GSRunsPolicy, HardwareLodBeforeManual)
+{
+	GSHWDrawConfig c = Way0();
+	c.ps.automatic_lod = 1;
+	c.ps.manual_lod = 1;
+	EXPECT_EQ(Field(Classify(c, Rgba8(), false).flags, STATE_LOD), LOD_HARDWARE);
+	c.ps.automatic_lod = 0;
+	EXPECT_EQ(Field(Classify(c, Rgba8(), false).flags, STATE_LOD), LOD_MANUAL);
+}
+
+TEST(GSRunsPolicy, BlendConstantWays)
+{
+	GSHWDrawConfig c = Way0();
+	c.ps.blend_c = 2;
+	c.cb_ps.TA_MaxDepth_Af.w = 0x40 / 128.0f;
+	c.blend = GSHWDrawConfig::BlendState(true, GSDevice::CONST_ONE, GSDevice::INV_CONST_COLOR, GSDevice::OP_ADD,
+		GSDevice::CONST_ONE, GSDevice::CONST_ZERO, true, 0x40);
+	Draw d = Classify(c, Rgba8(), false);
+	ASSERT_EQ(d.why, Refusal::None);
+	EXPECT_EQ(d.way, 1u);
+
+	// The constant in the blend unit must be the Af the row carries.
+	c.blend.constant = 0x41;
+	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Blend);
+
+	// A driver that ignores the blend constant: the factor rides the second output.
+	c = Way0();
+	c.ps.blend_c = 2;
+	c.ps.af_in_src1 = 1;
+	c.cb_ps.TA_MaxDepth_Af.w = 0x80 / 128.0f;
+	d = Classify(c, Rgba8(), false);
+	ASSERT_EQ(d.why, Refusal::None);
+	EXPECT_EQ(d.way, 1u);
+
+	// Af that does not fit the row's byte.
+	c.cb_ps.TA_MaxDepth_Af.w = 0.3f;
+	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Const);
+}
+
+TEST(GSRunsPolicy, ElidedBlendWays)
+{
+	GSHWDrawConfig c = Way0();
+	c.ps.blend_a = c.ps.blend_b = c.ps.blend_c = c.ps.blend_d = c.ps.blend_mix = 0;
+	c.blend = GSHWDrawConfig::BlendState();
+	Draw d = Classify(c, Rgba8(), false);
+	ASSERT_EQ(d.why, Refusal::None);
+	EXPECT_EQ(d.way, 2u);
+	c.colormask.wrgba = 0x8;
+	d = Classify(c, Rgba8(), false);
+	ASSERT_EQ(d.why, Refusal::None);
+	EXPECT_EQ(d.way, 3u);
+	// Any other write mask has no way.
+	c.colormask.wrgba = 0x7;
+	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Blend);
+	// Nor has another equation.
+	c = Way0();
+	c.blend.dst_factor = GSDevice::INV_SRC_ALPHA;
+	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Blend);
+	c = Way0();
+	c.colormask.wrgba = 0x7;
+	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Blend);
+}
+
+// The second output the run program writes per way makes the run pipeline's equation the classic pipeline's.
+TEST(GSRunsPolicy, WaysUnderTheRunEquation)
+{
+	for (float dst : {0.0f, 0.25f, 1.0f})
+	{
+		for (float src : {0.0f, 0.5f, 1.0f})
+		{
+			// Way 0 and 1: the classic pipeline is the same ONE, INV_SRC1 (or INV_CONST) equation with the same factor.
+			for (float f : {0.0f, 0.5f, 1.0f})
+				EXPECT_EQ(RunBlend(src, f, dst), src + dst * (1.0f - f));
+			// Way 2: blending off, the source written.
+			EXPECT_EQ(RunBlend(src, 1.0f, dst), src);
+			// Way 3: colour 0 and second output 0 keep the target's RGB.
+			EXPECT_EQ(RunBlend(0.0f, 0.0f, dst), dst);
+		}
+	}
+}
+
+TEST(GSRunsPolicy, FogColourMustFitTheRow)
+{
+	GSHWDrawConfig c = Way0();
+	c.ps.fog = 1;
+	c.cb_ps.FogColor_AREF = GSVector4(10.0f, 20.0f, 30.0f, 0.0f);
+	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::None);
+	c.cb_ps.FogColor_AREF = GSVector4(10.5f, 20.0f, 30.0f, 0.0f);
+	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Const);
+}
+
+TEST(GSRunsPolicy, DearStates)
+{
+	GSHWDrawConfig c = Way0();
+	EXPECT_EQ(Dear(Classify(c, Rgba8(), false).flags), 0u);
+	c.ps.automatic_lod = 1;
+	EXPECT_EQ(Dear(Classify(c, Rgba8(), false).flags), 1u);
+	c.ps.atst = static_cast<GSShader::PS_ATST>(2);
+	EXPECT_EQ(Dear(Classify(c, Rgba8(), false).flags), 3u);
+	// The hardware's lod means nothing untextured.
+	c.ps.tfx = 4;
+	EXPECT_EQ(Dear(Classify(c, TextureFacts(), false).flags), 2u);
+}
+
+TEST(GSRunsPolicy, ProgramKey)
+{
+	StateSet s;
+	GSHWDrawConfig c = Way0();
+	s.Note(Classify(c, Rgba8(), false).flags);
+	// One draw: every state a constant.
+	u32 key = s.Key();
+	for (u32 i = 0; i < NUM_STATES; i++)
+		EXPECT_NE((key >> (4 * i)) & 0xF, 0xFu) << STATE_NAME[i];
+	// A second draw with another texture function: that state alone is read from the rows.
+	c.ps.tfx = 1;
+	s.Note(Classify(c, Rgba8(), false).flags);
+	key = s.Key();
+	EXPECT_EQ(key & 0xF, 0xFu);
+	for (u32 i = 1; i < NUM_STATES; i++)
+		EXPECT_NE((key >> (4 * i)) & 0xF, 0xFu) << STATE_NAME[i];
+	// An untextured draw does not vary the textured-only states.
+	c = Way0();
+	c.ps.tfx = 4;
+	StateSet u;
+	u.Note(Classify(Way0(), Rgba8(), false).flags);
+	u.Note(Classify(c, TextureFacts(), false).flags);
+	EXPECT_EQ((u.Key() >> (4 * STATE_LOD)) & 0xF, LOD_NONE);
+	EXPECT_EQ(u.Key() & 0xF, 0xFu);
+}
+
+// A draw whose written channel is its interpolated colour times 1/255 keeps its colour states constant in its run
+// (GSRunsPolicy::Passthrough): the driver may move that multiply into the vertex program on the classic program's
+// shape, and a run program that reads those states from the rows has another shape.
+TEST(GSRunsPolicy, PassthroughDraws)
+{
+	GSHWDrawConfig c = Way0();
+	c.ps.tfx = 4;
+	c.ps.blend_a = c.ps.blend_b = c.ps.blend_c = c.ps.blend_d = c.ps.blend_mix = 0;
+	c.blend = GSHWDrawConfig::BlendState();
+	const u32 untextured = Classify(c, TextureFacts(), false).flags;
+	EXPECT_TRUE(Passthrough(untextured, false));
+	EXPECT_TRUE(Passthrough(untextured, true)) << "the colour is still passed through";
+	EXPECT_NE(StrictKey(untextured, false), 0u);
+
+	// Flat colour is not interpolated.
+	c.ps.iip = 0;
+	EXPECT_FALSE(Passthrough(Classify(c, TextureFacts(), false).flags, false));
+	c.ps.iip = 1;
+
+	// Fog truncates the colour; the alpha is still passed through without RTA correction, not with it.
+	c.ps.fog = 1;
+	const u32 fogged = Classify(c, TextureFacts(), false).flags;
+	EXPECT_TRUE(Passthrough(fogged, false));
+	EXPECT_FALSE(Passthrough(fogged, true));
+
+	// A modulated draw is never passed through.
+	EXPECT_FALSE(Passthrough(Classify(Way0(), Rgba8(), false).flags, false));
+
+	// Decal without the texture's alpha passes the vertex alpha through.
+	c = Way0();
+	c.ps.tfx = 1;
+	c.ps.tcc = 0;
+	const u32 decal = Classify(c, Rgba8(), false).flags;
+	EXPECT_TRUE(Passthrough(decal, false));
+	EXPECT_FALSE(Passthrough(decal, true));
+
+	// The strict key carries the colour states and nothing else.
+	c.ps.atst = static_cast<GSShader::PS_ATST>(2);
+	EXPECT_EQ(StrictKey(Classify(c, Rgba8(), false).flags, false), StrictKey(decal, false));
+	c.ps.fog = 1;
+	EXPECT_NE(StrictKey(Classify(c, Rgba8(), false).flags, false), StrictKey(decal, false));
+}
+
+// Additive blending: Cs * As (or Af) in the shader, the target added by a ONE, ONE blend. Under the run's equation
+// (ONE, INV_SRC1_COLOR) the second output 0 adds the target.
+TEST(GSRunsPolicy, AdditiveWays)
+{
+	GSHWDrawConfig c = Way0();
+	c.ps.blend_mix = 0;
+	c.ps.no_color1 = 1;
+	c.blend = GSHWDrawConfig::BlendState(true, GSDevice::CONST_ONE, GSDevice::CONST_ONE, GSDevice::OP_ADD, GSDevice::CONST_ONE,
+		GSDevice::CONST_ZERO, false, 0);
+	Draw d = Classify(c, Rgba8(), false);
+	ASSERT_EQ(d.why, Refusal::None);
+	EXPECT_EQ(d.way, 4u);
+	EXPECT_EQ(Field(d.flags, STATE_WAY), 4u);
+	c.ps.blend_c = 2;
+	c.cb_ps.TA_MaxDepth_Af.w = 0x20 / 128.0f;
+	d = Classify(c, Rgba8(), false);
+	ASSERT_EQ(d.why, Refusal::None);
+	EXPECT_EQ(d.way, 5u);
+	// The same blend with the alpha written by the target's term, or the colour masked, has no way.
+	c.blend.dst_factor_alpha = GSDevice::CONST_ONE;
+	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Blend);
+	c.blend.dst_factor_alpha = GSDevice::CONST_ZERO;
+	c.colormask.wrgba = 0x7;
+	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Blend);
+	// The run equation with the second output 0 is an add.
+	for (float dst : {0.0f, 0.5f, 1.0f})
+		EXPECT_EQ(RunBlend(0.25f, 0.0f, dst), 0.25f + dst);
+}
+
+// At Minimum blending the classic path leaves Cs * As + Cd * (1 - As) wholly to the blend unit: the shader writes Cs
+// and As unblended (no blend fields) under SRC1_COLOR, INV_SRC1_COLOR. Af likewise where the driver ignores the blend
+// constant and the classic draw sends Af through the second output. A run holding these takes the classic equation itself, so the
+// run program writes what the classic program writes.
+static GSHWDrawConfig UnitBlend()
+{
+	GSHWDrawConfig c = Way0();
+	c.ps.blend_a = c.ps.blend_b = c.ps.blend_c = c.ps.blend_d = c.ps.blend_mix = 0;
+	c.blend = GSHWDrawConfig::BlendState(true, GSDevice::SRC1_COLOR, GSDevice::INV_SRC1_COLOR, GSDevice::OP_ADD,
+		GSDevice::CONST_ONE, GSDevice::CONST_ZERO, false, 0);
+	return c;
+}
+
+TEST(GSRunsPolicy, UnitBlendWays)
+{
+	GSHWDrawConfig c = UnitBlend();
+	Draw d = Classify(c, Rgba8(), false);
+	ASSERT_EQ(d.why, Refusal::None);
+	EXPECT_EQ(d.way, 6u);
+	EXPECT_EQ(Field(d.flags, STATE_WAY), 6u);
+
+	// Af through the blend constant has no way: a run would carry it in the second output, and a blend unit does not
+	// take the constant and the second output to the same number (Mali-G57 and G615 differ by up to 8 levels).
+	c.ps.blend_c = 2;
+	c.cb_ps.TA_MaxDepth_Af.w = 0x30 / 128.0f;
+	c.blend = GSHWDrawConfig::BlendState(true, GSDevice::CONST_COLOR, GSDevice::INV_CONST_COLOR, GSDevice::OP_ADD,
+		GSDevice::CONST_ONE, GSDevice::CONST_ZERO, true, 0x30);
+	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Blend);
+	c.ps.no_color1 = 1;
+	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Blend);
+
+	// Af through the second output.
+	c = UnitBlend();
+	c.ps.blend_c = 2;
+	c.ps.af_in_src1 = 1;
+	c.cb_ps.TA_MaxDepth_Af.w = 0x30 / 128.0f;
+	d = Classify(c, Rgba8(), false);
+	ASSERT_EQ(d.why, Refusal::None);
+	EXPECT_EQ(d.way, 7u);
+	c.cb_ps.TA_MaxDepth_Af.w = 0.3f;
+	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Const);
+
+	// As without the second output, with a colour mask, or with a shader blend left in, has no way.
+	c = UnitBlend();
+	c.ps.no_color1 = 1;
+	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Blend);
+	c = UnitBlend();
+	c.colormask.wrgba = 0x7;
+	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Blend);
+	c = UnitBlend();
+	c.ps.blend_mix = 1;
+	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Blend);
+	c = UnitBlend();
+	c.blend.dst_factor_alpha = GSDevice::CONST_ONE;
+	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Blend);
+}
+
+// A run of the unit ways takes the classic equation (SRC1_COLOR, INV_SRC1_COLOR), under which the elided ways' second
+// outputs still give what they give under (ONE, INV_SRC1_COLOR). The shader-blend ways do not, so one run never holds
+// both kinds.
+TEST(GSRunsPolicy, UnitWaysTakeTheClassicEquation)
+{
+	const auto unit = [](float src, float second, float dst) { return src * second + dst * (1.0f - second); };
+	for (float dst : {0.0f, 0.25f, 1.0f})
+	{
+		for (float src : {0.0f, 0.5f, 1.0f})
+		{
+			EXPECT_EQ(unit(src, 1.0f, dst), RunBlend(src, 1.0f, dst)); // way 2
+			EXPECT_EQ(unit(0.0f, 0.0f, dst), RunBlend(0.0f, 0.0f, dst)); // way 3
+		}
+	}
+	EXPECT_TRUE(UnitEquation(1u << 6));
+	EXPECT_TRUE(UnitEquation((1u << 7) | (1u << 2) | (1u << 3)));
+	EXPECT_FALSE(UnitEquation((1u << 0) | (1u << 2)));
+	EXPECT_TRUE(WaysShareAnEquation((1u << 6) | (1u << 7) | (1u << 2) | (1u << 3)));
+	EXPECT_TRUE(WaysShareAnEquation((1u << 0) | (1u << 1) | (1u << 4) | (1u << 5) | (1u << 2) | (1u << 3)));
+	for (u32 shader : {0u, 1u, 4u, 5u})
+	{
+		for (u32 unit_way : {6u, 7u})
+			EXPECT_FALSE(WaysShareAnEquation((1u << shader) | (1u << unit_way))) << shader << " with " << unit_way;
+	}
+}
+
+// The unit ways write the colour unblended, so an untextured, unfogged one passes its colour through as way 2 does.
+TEST(GSRunsPolicy, UnitWayPassthrough)
+{
+	GSHWDrawConfig c = UnitBlend();
+	c.ps.tfx = 4;
+	EXPECT_TRUE(Passthrough(Classify(c, TextureFacts(), false).flags, true));
+}
+
+// Where the driver needs it (BrokenMixedSamplingDerivatives), a run's textured draws share one sampling call: a draw
+// that would bring a second ends the run, untextured draws join any run. Elsewhere every draw joins.
+TEST(GSRunsPolicy, OneSamplingCallPerRun)
+{
+	GSHWDrawConfig c = Way0();
+	const u32 none = Classify(c, Rgba8(), false).flags;
+	c.ps.manual_lod = 1;
+	const u32 manual = Classify(c, Rgba8(), false).flags;
+	c.ps.automatic_lod = 1;
+	const u32 hardware = Classify(c, Rgba8(), false).flags;
+	c = Way0();
+	c.ps.tfx = 4;
+	const u32 untextured = Classify(c, TextureFacts(), false).flags;
+	ASSERT_EQ(Field(none, STATE_LOD), LOD_NONE);
+	ASSERT_EQ(Field(manual, STATE_LOD), LOD_MANUAL);
+	ASSERT_EQ(Field(hardware, STATE_LOD), LOD_HARDWARE);
+
+	for (u32 f : {none, manual, hardware, untextured})
+		EXPECT_TRUE(LodJoins(true, LOD_ANY, f));
+	EXPECT_TRUE(LodJoins(true, LOD_MANUAL, manual));
+	EXPECT_FALSE(LodJoins(true, LOD_MANUAL, hardware));
+	EXPECT_FALSE(LodJoins(true, LOD_HARDWARE, none));
+	EXPECT_FALSE(LodJoins(true, LOD_NONE, manual));
+	for (u32 lod : {LOD_NONE, LOD_MANUAL, LOD_HARDWARE})
+		EXPECT_TRUE(LodJoins(true, lod, untextured));
+
+	// Without the bug, mixed runs stay.
+	for (u32 lod : {LOD_ANY, LOD_NONE, LOD_MANUAL, LOD_HARDWARE})
+	{
+		for (u32 f : {none, manual, hardware, untextured})
+			EXPECT_TRUE(LodJoins(false, lod, f));
+	}
+}
+
+// The split rule's device classes come from the reported device name, and a run ends at a dear change only when the
+// price of carrying the dear state over the run's fill exceeds the price of a host draw.
+TEST(GSRunsPolicy, DeviceClassesAndTheSplitRule)
+{
+	EXPECT_STREQ(DeviceClassFor("Turnip Adreno (TM) 650").name, "Adreno 650");
+	EXPECT_STREQ(DeviceClassFor("Mali-G615 MC6").name, "Mali-G615");
+	EXPECT_STREQ(DeviceClassFor("Mali-G57 MC2").name, "Mali-G57");
+	EXPECT_STREQ(DeviceClassFor("Apple M2 Max (G14C B1)").name, "other");
+	EXPECT_STREQ(DeviceClassFor(nullptr).name, "other");
+
+	const DeviceClass& a650 = DeviceClassFor("Turnip Adreno (TM) 650");
+	// 900 ns a host draw against 38 ps a pixel: the break-even is about 23,700 pixels of fill.
+	EXPECT_FALSE(SplitAtDear(a650, 10000, 1000));
+	EXPECT_TRUE(SplitAtDear(a650, 30000, 1000));
+	// A GPU where a host draw costs more merges larger runs before it splits.
+	const DeviceClass& g57 = DeviceClassFor("Mali-G57 MC2");
+	EXPECT_FALSE(SplitAtDear(g57, 7000, 0));
+	EXPECT_TRUE(SplitAtDear(g57, 8000, 0));
+}
+
+TEST(GSRunsPolicy, NotingTheSameStatesAgainChangesNoProgram)
+{
+	// The run emitter skips the state set and the program check for a row whose flags equal the last row's in its group;
+	// that is exact only because noting flags already noted changes nothing.
+	const u32 a = 1u | (1u << 3) | (4u << 9);
+	const u32 b = 2u | (1u << 3) | (4u << 9);
+	StateSet once;
+	once.Note(a);
+	once.Note(b);
+	StateSet again = once;
+	again.Note(b);
+	again.Note(b);
+	EXPECT_EQ(again.Key(), once.Key());
+	EXPECT_EQ(again.vary, once.vary);
+	StateSet one;
+	one.Note(a);
+	StateSet same = one;
+	same.Note(a);
+	EXPECT_EQ(same.Key(), one.Key());
+}
+
+// Where the run program fetches (DriverBug::StallsOnFilteredRunSampling), a textured row whose texture has one level can
+// be filtered by hand from texelFetch, with its sampler's address modes and filter in the bits above its slot. Every
+// other row must keep the sampler: a texture with more levels, and a row whose filter depends on the level of detail
+// (minification and magnification differ, and the lod is not fixed at 0).
+namespace
+{
+	GSHWDrawConfig::SamplerSelector Sampler(bool repeat_u, bool repeat_v, bool bilinear, GS_MIN_FILTER min, bool lodclamp)
+	{
+		GSHWDrawConfig::SamplerSelector ss;
+		ss.tau = repeat_u;
+		ss.tav = repeat_v;
+		ss.biln = bilinear;
+		ss.triln = static_cast<u8>(min);
+		ss.lodclamp = lodclamp;
+		return ss;
+	}
+
+	u32 RowFlags(bool manual_lod, bool automatic_lod)
+	{
+		GSHWDrawConfig c = Way0();
+		c.ps.manual_lod = manual_lod;
+		c.ps.automatic_lod = automatic_lod;
+		return Classify(c, Rgba8(), false).flags;
+	}
+} // namespace
+
+TEST(GSRunsPolicy, SingleLevelRowsFetch)
+{
+	const u32 none = RowFlags(false, false);
+	ASSERT_EQ(Field(none, STATE_LOD), LOD_NONE);
+
+	// The sampler's address modes and magnification filter, above the slot.
+	EXPECT_EQ(FetchBits(none, Sampler(true, false, true, GS_MIN_FILTER::Nearest, true), 1),
+		ROW_FETCH | ROW_FETCH_REPEAT_U | ROW_FETCH_LINEAR);
+	EXPECT_EQ(FetchBits(none, Sampler(false, true, true, GS_MIN_FILTER::Nearest, true), 1),
+		ROW_FETCH | ROW_FETCH_REPEAT_V | ROW_FETCH_LINEAR);
+	EXPECT_EQ(FetchBits(none, Sampler(false, false, false, GS_MIN_FILTER::Nearest, true), 1), ROW_FETCH);
+	EXPECT_EQ(FetchBits(none, Sampler(true, true, false, GS_MIN_FILTER::Nearest, true), 1),
+		ROW_FETCH | ROW_FETCH_REPEAT_U | ROW_FETCH_REPEAT_V);
+
+	// At lod 0 the sampler magnifies, so a minification filter that differs does not matter.
+	EXPECT_EQ(FetchBits(none, Sampler(false, false, false, GS_MIN_FILTER::Linear_Mipmap_Nearest, false), 1), ROW_FETCH);
+	EXPECT_EQ(FetchBits(none, Sampler(false, false, true, GS_MIN_FILTER::Nearest_Mipmap_Nearest, false), 1),
+		ROW_FETCH | ROW_FETCH_LINEAR);
+
+	// A lod that can move off 0, on one level: still level 0, and the filter is the same either way.
+	for (const u32 flags : {RowFlags(true, false), RowFlags(false, true)})
+	{
+		ASSERT_NE(Field(flags, STATE_LOD), LOD_NONE);
+		EXPECT_EQ(FetchBits(flags, Sampler(false, false, true, GS_MIN_FILTER::Linear_Mipmap_Linear, false), 1),
+			ROW_FETCH | ROW_FETCH_LINEAR);
+		EXPECT_EQ(FetchBits(flags, Sampler(false, false, false, GS_MIN_FILTER::Nearest_Mipmap_Nearest, false), 1),
+			ROW_FETCH);
+		EXPECT_EQ(FetchBits(flags, Sampler(true, true, true, GS_MIN_FILTER::Linear, true), 1),
+			ROW_FETCH | ROW_FETCH_REPEAT_U | ROW_FETCH_REPEAT_V | ROW_FETCH_LINEAR);
+	}
+}
+
+TEST(GSRunsPolicy, RowsThatKeepTheSampler)
+{
+	const u32 none = RowFlags(false, false);
+	const u32 manual = RowFlags(true, false);
+	const u32 hardware = RowFlags(false, true);
+	const GSHWDrawConfig::SamplerSelector trilinear = Sampler(true, true, true, GS_MIN_FILTER::Linear_Mipmap_Linear, false);
+
+	// A texture with more than one level, whatever the lod: the sampler picks and blends the levels.
+	for (const u32 flags : {none, manual, hardware})
+	{
+		for (const int levels : {2, 7})
+			EXPECT_EQ(FetchBits(flags, trilinear, levels), 0u) << flags << " " << levels;
+	}
+
+	// One level, but the lod chooses between a nearest and a linear filter.
+	for (const u32 flags : {manual, hardware})
+	{
+		EXPECT_EQ(FetchBits(flags, Sampler(false, false, false, GS_MIN_FILTER::Linear_Mipmap_Nearest, false), 1), 0u);
+		EXPECT_EQ(FetchBits(flags, Sampler(false, false, true, GS_MIN_FILTER::Nearest_Mipmap_Linear, false), 1), 0u);
+	}
+
+	// An untextured row samples nothing.
+	GSHWDrawConfig c = Way0();
+	c.ps.tfx = 4;
+	const u32 untextured = Classify(c, TextureFacts(), false).flags;
+	EXPECT_EQ(FetchBits(untextured, trilinear, 1), 0u);
+}
+
+// The sampling bits sit above every slot a row can name.
+TEST(GSRunsPolicy, FetchBitsLeaveTheSlot)
+{
+	const u32 all = ROW_FETCH | ROW_FETCH_REPEAT_U | ROW_FETCH_REPEAT_V | ROW_FETCH_LINEAR;
+	EXPECT_EQ(all & ROW_SLOT_MASK, 0u);
+	EXPECT_GE(ROW_SLOT_MASK, 1023u);
+	EXPECT_EQ(FetchBits(RowFlags(false, false), Sampler(true, true, true, GS_MIN_FILTER::Nearest, true), 1), all);
+}
+
+// A row's streak class is a property of the emulated draw, not of where the host allocated its targets: two replays of
+// one dump must open the same groups. The targets enter by their sizes.
+TEST(GSRunsPolicy, StreakClassesDoNotDependOnTargetAddresses)
+{
+	static int other_rt, other_ds;
+	const GSHWDrawConfig a = Way0();
+	GSHWDrawConfig b = a;
+	b.rt = reinterpret_cast<GSTexture*>(&other_rt);
+	b.ds = reinterpret_cast<GSTexture*>(&other_ds);
+	const GSVector2i rt(640, 448), ds(640, 448), small(320, 224);
+	EXPECT_EQ(StreakClass(a, 0, rt, ds), StreakClass(b, 0, rt, ds));
+	GSHWDrawConfig a_no_ds = a, b_no_ds = b;
+	a_no_ds.ds = b_no_ds.ds = nullptr;
+	EXPECT_EQ(StreakClass(a_no_ds, 0, rt, GSVector2i(0, 0)), StreakClass(b_no_ds, 0, rt, GSVector2i(0, 0)));
+
+	// What the class does hold: the targets' sizes and the rest of the fixed state.
+	EXPECT_NE(StreakClass(a, 0, rt, ds), StreakClass(a, 0, small, ds));
+	EXPECT_NE(StreakClass(a, 0, rt, ds), StreakClass(a, 0, rt, small));
+	EXPECT_NE(StreakClass(a, 0, rt, ds), StreakClass(a, 1, rt, ds));
+	GSHWDrawConfig scissor = a;
+	scissor.scissor = GSVector4i(0, 0, 64, 64);
+	EXPECT_NE(StreakClass(a, 0, rt, ds), StreakClass(scissor, 0, rt, ds));
+}
+
+// Where the run program fetches, a group samples at most SAMPLER_TEXTURES distinct textures through the sampler. A row
+// whose texture is in that set, or that finds room in it, uses the sampler. Past that, a small row that can fetch
+// fetches, and a large row, or one that cannot fetch, closes the group and opens the next.
+TEST(GSRunsPolicy, RowsArePlacedByTheSamplerBoundAndTheirArea)
+{
+	EXPECT_EQ(SAMPLER_TEXTURES, 4u);
+	EXPECT_EQ(FETCH_AREA, 1024u);
+	const u64 small = FETCH_AREA - 1, large = FETCH_AREA;
+	for (const bool eligible : {false, true})
+	{
+		for (const u64 area : {u64{0}, small, large, u64{1} << 30})
+		{
+			// Room in the set, or the texture already in it: the sampler.
+			for (u32 n = 0; n < SAMPLER_TEXTURES; n++)
+				EXPECT_EQ(PlaceRow(eligible, false, n, area), Placement::Sampler);
+			EXPECT_EQ(PlaceRow(eligible, true, SAMPLER_TEXTURES, area), Placement::Sampler);
+		}
+	}
+	// The set full and the texture new.
+	EXPECT_EQ(PlaceRow(true, false, SAMPLER_TEXTURES, 0), Placement::Fetch);
+	EXPECT_EQ(PlaceRow(true, false, SAMPLER_TEXTURES, small), Placement::Fetch);
+	EXPECT_EQ(PlaceRow(true, false, SAMPLER_TEXTURES, large), Placement::Close);
+	EXPECT_EQ(PlaceRow(false, false, SAMPLER_TEXTURES, 0), Placement::Close);
+	EXPECT_EQ(PlaceRow(false, false, SAMPLER_TEXTURES, large), Placement::Close);
+
+	// The bounds are the caller's to move: area 0 makes every row large (a cap of K textures, no fetch); a huge area
+	// fetches every eligible row past the K-th texture.
+	EXPECT_EQ(PlaceRow(true, false, 2, 16, 2, 0), Placement::Close);
+	EXPECT_EQ(PlaceRow(true, false, 2, u64{1} << 40, 2, ~u64{0}), Placement::Fetch);
+	EXPECT_EQ(PlaceRow(true, false, 1, 0, 2, 0), Placement::Sampler);
+}

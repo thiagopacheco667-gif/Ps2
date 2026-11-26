@@ -1,0 +1,99 @@
+package com.armsx2
+
+import android.opengl.EGL14
+import android.opengl.EGLConfig
+import android.opengl.GLES20
+
+/**
+ * Detects the physical GPU's GL_RENDERER string (e.g. "Adreno (TM) 740",
+ * "Mali-G715", "PowerVR ...") via a throwaway offscreen GLES2 context, and maps
+ * Adreno models to a recommended in-app driver source — the "driver update
+ * assistant" idea (recommend a Turnip pack by GPU, like Eden).
+ *
+ * The probe reads the SYSTEM GL driver (not a loaded adrenotools Vulkan driver),
+ * which is exactly what we want to key the recommendation on. Result is cached.
+ */
+object GpuInfo {
+    /** The three GL identity strings, as one probe. GL_VERSION carries the driver revision
+     *  (e.g. "OpenGL ES 3.2 v1.r44p1-01eac0..."), which is what the native driver-bug database
+     *  matches on — the GPU model alone cannot distinguish a healthy blob from a broken one. */
+    data class GlStrings(val vendor: String?, val renderer: String?, val version: String?)
+
+    @Volatile private var cached: GlStrings? = null
+    @Volatile private var probed = false
+
+    /** All three GL identity strings, or null entries where they couldn't be read. Cached. */
+    fun glStrings(): GlStrings {
+        if (probed) return cached ?: GlStrings(null, null, null)
+        synchronized(this) {
+            if (probed) return cached ?: GlStrings(null, null, null)
+            cached = runCatching { probe() }.getOrNull()
+            probed = true
+            return cached ?: GlStrings(null, null, null)
+        }
+    }
+
+    /** GL_RENDERER of the system GPU, or null if it couldn't be read. Cached. */
+    fun rendererName(): String? = glStrings().renderer?.takeIf { it.isNotBlank() }
+
+    private fun probe(): GlStrings? {
+        val display = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
+        if (display == EGL14.EGL_NO_DISPLAY) return null
+        val ver = IntArray(2)
+        if (!EGL14.eglInitialize(display, ver, 0, ver, 1)) return null
+        try {
+            val cfgAttrs = intArrayOf(
+                EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
+                EGL14.EGL_SURFACE_TYPE, EGL14.EGL_PBUFFER_BIT,
+                EGL14.EGL_NONE,
+            )
+            val cfgs = arrayOfNulls<EGLConfig>(1)
+            val num = IntArray(1)
+            if (!EGL14.eglChooseConfig(display, cfgAttrs, 0, cfgs, 0, 1, num, 0) || num[0] == 0) return null
+            val ctxAttrs = intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, 2, EGL14.EGL_NONE)
+            val ctx = EGL14.eglCreateContext(display, cfgs[0], EGL14.EGL_NO_CONTEXT, ctxAttrs, 0)
+            if (ctx == EGL14.EGL_NO_CONTEXT) return null
+            val pbAttrs = intArrayOf(EGL14.EGL_WIDTH, 1, EGL14.EGL_HEIGHT, 1, EGL14.EGL_NONE)
+            val surf = EGL14.eglCreatePbufferSurface(display, cfgs[0], pbAttrs, 0)
+            try {
+                if (!EGL14.eglMakeCurrent(display, surf, surf, ctx)) return null
+                return GlStrings(
+                    vendor = GLES20.glGetString(GLES20.GL_VENDOR),
+                    renderer = GLES20.glGetString(GLES20.GL_RENDERER),
+                    version = GLES20.glGetString(GLES20.GL_VERSION),
+                )
+            } finally {
+                EGL14.eglMakeCurrent(display, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
+                if (surf != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(display, surf)
+                EGL14.eglDestroyContext(display, ctx)
+            }
+        } finally {
+            EGL14.eglTerminate(display)
+        }
+    }
+
+    data class Recommendation(val sourceLabel: String, val reason: String)
+
+    /**
+     * Suggested driver source for [renderer], or null when no custom driver
+     * applies (Xclipse and PowerVR run the built-in system driver, and so do Mali parts malisx2
+     * does not support). Adreno maps to a tuned Turnip pack, a supported Mali to malisx2 — the
+     * same sources the driver list offers it ([CustomDriver.sourceLabelsFor]).
+     */
+    fun recommendation(renderer: String?): Recommendation? {
+        val r = CustomDriver.withAdrenoModelNumber(renderer) ?: return null
+        // Our own Mali driver, on exactly the parts malisx2 lists for: the card and the download
+        // list must not disagree about a device that is offered one.
+        if (CustomDriver.isMaliSX2Supported(r)) return Recommendation("ARMSX2 · MaliSX2", "ARMSX2's own Mali driver for this GPU")
+        if (!r.contains("Adreno", ignoreCase = true)) return null
+        val model = Regex("""(\d{3,4})""").find(r.substringAfter("Adreno", ""))?.value?.toIntOrNull()
+        return when {
+            // Our own Turnip on the parts its device table lists: the same range the first-run setup offers it on, so the two agree.
+            CustomDriver.isArmsx2TurnipPart(r) -> Recommendation("ARMSX2 Turnip", "ARMSX2's own Turnip for this GPU")
+            // Every other number from 800 up (an 8xx part the pack has no table row for, a 9xx or a four-digit number):
+            // StevenMXZ's Turnip gen8 builds, the pick ARMSX3 makes too; the GameHub 8Elite packs stay in the list.
+            model != null && model >= 800 -> Recommendation("StevenMXZ · Adreno-Tools", "Turnip gen8 builds for Snapdragon 8 Elite / Adreno 8xx")
+            else -> Recommendation("KIMCHI", "AdrenoTools Turnip (Adreno)")
+        }
+    }
+}
