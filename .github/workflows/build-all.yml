@@ -22,19 +22,7 @@
 name: Build All Platforms
 
 on:
-  push:
-    branches:
-      - master
-    # Doc-only pushes shouldn't burn ~2h of arm64 CI.
-    paths-ignore:
-      - '**/*.md'
-      - 'LICENSE*'
-      - '.gitignore'
-  pull_request:
-    paths-ignore:
-      - '**/*.md'
-      - 'LICENSE*'
-      - '.gitignore'
+  # Nexus2 fork: manual only. The Android APK is built by android-apk.yml.
   workflow_dispatch:
 
 concurrency:

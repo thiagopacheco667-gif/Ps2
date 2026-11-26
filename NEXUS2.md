@@ -14,12 +14,15 @@ baseado no [PCSX2](https://pcsx2.net). Importado sem modificações do commit `4
 | 4 | Recursos de rede ficarão **desligados por padrão**. | Seção 9 da especificação (privacidade). |
 | 5 | Mali-G720 usa o driver Vulkan de fábrica; MaliSX2 não suporta a 5ª geração de Mali. | Ver `CustomDriver.kt`. Turnip não se aplica a Mali. |
 | 6 | Build pelo GitHub Actions (`.github/workflows/android-apk.yml`). | O ambiente de desenvolvimento não alcança os servidores do Android SDK/Gradle. |
+| 8 | `applicationId` = `com.nexus2`; o namespace Kotlin `com.armsx2` fica. | Instala ao lado do ARMSX2 sem renomear centenas de arquivos. O manifest já usa `${applicationId}`. |
+| 9 | Intro em vídeo do ARMSX2 desligada por padrão (pode ser ligada nas configurações). | É marca do ARMSX2. |
+| 10 | Textos sobre o driver MaliSX2/Turnip e o envio de bug reports continuam dizendo "ARMSX2". | São serviços do ARMSX2; dizer "Nexus2" seria falso. |
 | 7 | Agendamento diário do `nightly.yml` do upstream desativado. | Ele publica nightlies do ARMSX2 e gastaria minutos do Actions. |
 
 ## Etapas
 
 1. [ ] Compilar o APK original sem alterações (em andamento).
-2. [ ] Rebrand: nome, applicationId, ícone, paleta, splash, Sobre/licenças.
+2. [~] Rebrand (branch `nexus2-rebrand`): nome, applicationId, ícone, paleta, splash, Sobre/licenças.
 3. [ ] Polimento da interface.
 4. [ ] Perfil Dimensity 8400 / Mali-G720.
 5. [ ] Recursos de rede desligados por padrão.

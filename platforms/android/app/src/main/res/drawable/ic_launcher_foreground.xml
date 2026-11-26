@@ -1,19 +1,41 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!--
-  savetowerforeground is a fully pre-composed icon (tower + its own dark radial
-  background) that fills the whole 1024px square. Dropping it straight into an
-  adaptive-icon <foreground> with gravity="fill" stretches it across the entire
-  108dp layer, so the launcher mask (which only shows the centre ~72dp safe zone)
-  crops the dark margins and zooms hard into the tower. Inset the artwork so the
-  full composition lands inside the safe zone and the tower keeps its breathing
-  room; the ~18% margin shows the solid #01071C adaptive background, which matches
-  the artwork's dark edges so the seam is invisible.
--->
-<inset xmlns:android="http://schemas.android.com/apk/res/android"
-    android:inset="18%">
-    <bitmap
-        android:antialias="true"
-        android:dither="true"
-        android:gravity="fill"
-        android:src="@drawable/savetowerforeground" />
-</inset>
+<!-- Nexus2 launcher mark: a hexagon ring around a stylised "N", violet #8257FF to blue #35A8FF.
+     Original artwork; everything sits inside the 66dp adaptive-icon safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:pathData="M54,25 L79,39.5 L79,68.5 L54,83 L29,68.5 L29,39.5 Z"
+        android:strokeWidth="4.5"
+        android:strokeLineJoin="round"
+        android:fillColor="#00000000">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:type="linear"
+                android:startX="29" android:startY="25"
+                android:endX="79" android:endY="83">
+                <item android:offset="0" android:color="#FF8257FF" />
+                <item android:offset="1" android:color="#FF35A8FF" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <path
+        android:pathData="M43,66 L43,42 L65,66 L65,42"
+        android:strokeWidth="6"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:fillColor="#00000000">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:type="linear"
+                android:startX="43" android:startY="42"
+                android:endX="65" android:endY="66">
+                <item android:offset="0" android:color="#FFB39CFF" />
+                <item android:offset="1" android:color="#FF8FD3FF" />
+            </gradient>
+        </aapt:attr>
+    </path>
+</vector>
