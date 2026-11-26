@@ -108,10 +108,10 @@ object ThemePreferences {
 object BootLogoPreferences {
     private const val PreferenceKey = "ui.bootLogo"
 
-    val enabled = mutableStateOf(true)
+    val enabled = mutableStateOf(false)
 
     fun load() {
-        enabled.value = MainActivityRuntime.prefs.getBoolean(PreferenceKey, true)
+        enabled.value = MainActivityRuntime.prefs.getBoolean(PreferenceKey, false)
     }
 
     fun set(value: Boolean) {
@@ -306,15 +306,15 @@ object LauncherOrientationPreferences {
 }
 
 private val NightScheme = darkColorScheme(
-    primary = ArmsBlueBright,
-    onPrimary = Color(0xFF07101F),
-    primaryContainer = Color(0xFF183B73),
-    onPrimaryContainer = Color(0xFFD9E7FF),
-    secondary = ArmsCyan,
-    onSecondary = Color(0xFF001F25),
-    secondaryContainer = Color(0xFF123944),
-    onSecondaryContainer = Color(0xFFB9F3FF),
-    tertiary = ArmsViolet,
+    primary = NexusViolet,
+    onPrimary = Color.White,
+    primaryContainer = Color(0xFF2E2266),
+    onPrimaryContainer = Color(0xFFE6DEFF),
+    secondary = NexusBlue,
+    onSecondary = Color(0xFF00213A),
+    secondaryContainer = Color(0xFF113A5C),
+    onSecondaryContainer = Color(0xFFCDE8FF),
+    tertiary = NexusBlue,
     background = NightBackground,
     onBackground = NightText,
     surface = NightSurface,

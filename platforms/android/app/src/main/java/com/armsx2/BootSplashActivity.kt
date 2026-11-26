@@ -39,7 +39,7 @@ class BootSplashActivity : ComponentActivity() {
 
         preview = intent?.getBooleanExtra(BootIntro.EXTRA_PREVIEW, false) == true
         val prefs = getSharedPreferences("ARMSX2", MODE_PRIVATE)
-        val bootLogoEnabled = prefs.getBoolean("ui.bootLogo", true)
+        val bootLogoEnabled = prefs.getBoolean("ui.bootLogo", false)
         if (!preview && (!bootLogoEnabled || playedThisProcess)) {
             launchMainAndFinish()
             return
