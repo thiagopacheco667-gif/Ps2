@@ -161,6 +161,17 @@ android {
     }
 
     signingConfigs {
+        // Nexus2: one fixed debug key, committed with Android's public debug password, so every
+        // CI build is signed the same way and installs as an UPDATE over the previous one. (The
+        // stock debug key is generated fresh on each CI runner, which made every build a
+        // different signer and Android refused to update.) Not a secret and not for a store:
+        // the same trade-off as Android's own debug key.
+        getByName("debug") {
+            storeFile = file("nexus2-debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
         create("playRelease") {
             armsx2SigningProperty("storeFile")?.let { storeFile = rootProject.file(it) }
             storePassword = armsx2SigningProperty("storePassword")

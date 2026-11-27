@@ -53,7 +53,12 @@ jobs:
         run: rustup target add aarch64-linux-android
 
       - name: Build release APK
-        run: ./gradlew :app:assembleRelease --stacktrace
+        # Nexus2: versionCode rises with every build (above upstream's 1088), so each APK is a
+        # newer version of the previous one and installs as an update.
+        run: >-
+          ./gradlew :app:assembleRelease --stacktrace
+          -Parmsx2.versionCode=$((2000 + ${{ github.run_number }}))
+          -Parmsx2.versionName=2.6.1-nexus.${{ github.run_number }}
 
       - name: Upload APK
         uses: actions/upload-artifact@v7
