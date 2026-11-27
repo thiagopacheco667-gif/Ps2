@@ -5,6 +5,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
 import com.armsx2.R
 
 /**
@@ -18,7 +19,6 @@ val NexusInter = FontFamily(
     Font(R.font.inter_semibold, FontWeight.SemiBold),
     Font(R.font.inter_bold, FontWeight.Bold),
 )
-import androidx.compose.ui.unit.sp
 
 val ArmsTypography = Typography(
     displayLarge = TextStyle(
