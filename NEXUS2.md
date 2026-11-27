@@ -57,3 +57,9 @@ baseado no [PCSX2](https://pcsx2.net). Importado sem modificações do commit `4
 - [~] Módulo por jogo: cabeçalho (capa, região, perfil, restaurar padrão), só Gráficos/Emulação/Áudio/Controles, "↺ Global" por opção (remove só aquela chave do arquivo do jogo e regrava o INI), perfis por jogo.
 - [~] Etapa 6: menu de pausa mantido (já tem salvar/carregar estado, vídeo, avanço rápido, indicadores); só a cor fixa trocada pelo tema. Controles virtuais sem mudança de lógica.
 - [~] Desempenho e diagnóstico: FPS, VPS, velocidade, tempo de frame, uso de GPU, backend, resolução e memória ao vivo (só com jogo aberto), temperaturas.
+
+## Refinamento 3 (biblioteca e configurações durante a emulação)
+
+- [~] Fase 1: menu do jogo em Geral (só ações), Vídeo (renderizador/resolução/proporção/filtros primeiro, resto recolhido), Emulação (compatibilidade + correções avançadas recolhidas), Desempenho, Controles (+ OSD), Sistema (saves, memory cards, patches, info do jogo, GS dump, relatório). Abas com ícone + texto, descrições em 1 linha, seções planas, cabeçalho com "Configurações personalizadas" quando o jogo tem ajustes próprios.
+- [~] Fase 2: Biblioteca sem a seção de recentes (o histórico continua e aparece só no Início); filtros Todos / Favoritos / regiões presentes; toque abre a página do jogo; segurar: Favoritar, Configurações individuais, Informações, Remover da biblioteca (é o "ocultar": o arquivo nunca é apagado; ⋮ → Mostrar jogos removidos).
+- [~] Fase 3: Inter (OFL) para textos/valores, fonte de título mantida; o switch global de patches de blur não aparece mais nas páginas por jogo; GPUs sem fonte de driver (Mali-G720 e outras Mali 5ª geração) não veem lista de downloads, opções Turnip nem texto de Adreno, e o driver do sistema nunca é trocado sozinho; textos de Ajustes → App dizem se afetam Início ou Biblioteca.

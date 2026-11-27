@@ -674,6 +674,6 @@ private fun NexusGameSettingsHeader(game: com.armsx2.GameInfo, settings: com.arm
         com.armsx2.ui.nexus.NexusSecondaryButton(str("nexus.gameSettings.resetAll"), Modifier.fillMaxWidth(), onClick = onResetAll)
         Spacer(Modifier.size(4.dp))
         // The same one-tap profiles as the global page, written to this game only.
-        com.armsx2.ui.settings.QuickProfilesSection(settings) { com.armsx2.ui.InGameOverlay.saveSettings(it) }
+        com.armsx2.ui.settings.QuickProfilesSection(settings, showGlobalBlurPatches = false) { com.armsx2.ui.InGameOverlay.saveSettings(it) }
     }
 }

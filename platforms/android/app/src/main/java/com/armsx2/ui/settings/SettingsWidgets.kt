@@ -810,7 +810,7 @@ fun ToggleRow(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 14.sp,
                         lineHeight = 19.sp,
-                        maxLines = 3,
+                        maxLines = 1, // Nexus2: one line; the full text is in the ⓘ next to the title
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
@@ -1190,7 +1190,7 @@ fun SegmentedRow(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 14.sp,
                     lineHeight = 19.sp,
-                    maxLines = 3,
+                    maxLines = 1, // Nexus2: one line; the full text is in the ⓘ next to the title
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.padding(horizontal = 16.dp),
                 )
@@ -1280,7 +1280,7 @@ fun SegmentedGridRow(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 14.sp,
                     lineHeight = 19.sp,
-                    maxLines = 3,
+                    maxLines = 1, // Nexus2: one line; the full text is in the ⓘ next to the title
                     overflow = TextOverflow.Ellipsis,
                 )
             }

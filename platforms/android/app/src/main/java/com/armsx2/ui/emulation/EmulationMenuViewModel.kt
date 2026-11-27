@@ -12,12 +12,13 @@ import com.armsx2.ui.achievements.parseAchievementItems
 import kr.co.iefriends.pcsx2.NativeApp
 
 enum class EmulationMenuTab(val titleKey: String) {
-    Session("games.info.inGameMenu.title"),
-    Graphics("tab.renderer"),
-    Fixes("tab.fixes"),
-    Performance("tab.performance"),
-    Controls("tab.controls"),
-    Options("action.settings"),
+    // Nexus2 names: Geral, Vídeo, Emulação, Desempenho, Controles, Sistema (+ RetroAchievements).
+    Session("nexus.ingame.general"),
+    Graphics("nexus.ingame.video"),
+    Fixes("nexus.ingame.emulation"),
+    Performance("nexus.ingame.performance"),
+    Controls("nexus.ingame.controls"),
+    Options("nexus.ingame.system"),
     Achievements("ra.title"),
     // No Friends tab. It lived at the end of a rail that scrolls, so reaching it meant knowing it
     // was there and then hunting for it — it is a header button with its own overlay instead.

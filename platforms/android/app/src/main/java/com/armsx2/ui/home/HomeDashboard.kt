@@ -97,7 +97,9 @@ fun HomeDashboard(viewModel: HomeViewModel = viewModel()) {
             }
 
             val moreRecents = recents.drop(1)
-            if (moreRecents.isNotEmpty()) {
+            // Nexus2: Settings → App → "Recent games on Home" hides this row (Home only; the
+            // Continue hero and the history itself stay).
+            if (moreRecents.isNotEmpty() && com.armsx2.ui.theme.LibraryChromePreferences.showRecents.value) {
                 NexusSectionHeader(str("nexus.home.recent"), action = str("nexus.home.seeLibrary")) {
                     UiNavigator.selectTab(MainTab.Library)
                 }
