@@ -297,7 +297,10 @@ fun HomeScreen(
                     // GLES3) that reads the same colour prefs as the GL wave. The bundled still is the
                     // placeholder shown during GL startup and sits hidden behind the wave once it is up.
                     // Custom backgrounds below override all of this.
-                    if (LibraryBackground.flurry.value) {
+                    if (LibraryBackground.particles.value && !LibraryBackground.flurry.value) {
+                        // Nexus2 default: controller-symbol particles on the 2D Canvas (any GPU).
+                        NexusParticleBackground(Modifier.fillMaxSize())
+                    } else if (LibraryBackground.flurry.value) {
                         // Flurry falls back to the 2D backdrop when GL cannot come up, as XmbGlView does.
                         var flurryGl by remember { mutableStateOf<Boolean?>(null) }
                         if (flurryGl == false) {

@@ -351,7 +351,7 @@
  "app.clearCache.done": "تم مسح %s من البيانات المؤقتة.",
  "app.clearCache.doneSmall": "تم مسح البيانات المؤقتة.",
  "app.clearCache.empty": "ذاكرة التخزين المؤقت فارغة بالفعل.",
- "app.credits.music": "الموسيقى: \"Calm Ambient 1 (Synthwave 4k)\" من The Cynic Project / cynicmusic.com / pixelsphere.org (CC0)",
+ "app.credits.music": "Music: \"Nexus Ambient\", made for Nexus2 (CC0). UI sounds: original Nexus2 sounds (CC0).",
  "app.credits.museumMusic": "موسيقى متحف الأيقونات: \"Another August\" من The Cynic Project / cynicmusic.com / pixelsphere.org",
  "app.credits.sfx": "أصوات القوائم: \"Interface SFX Pack 1\" من obsydianx.itch.io (CC0)",
  "app.keyboard.systemIme": "استخدام لوحة مفاتيح النظام",

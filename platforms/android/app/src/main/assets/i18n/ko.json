@@ -351,7 +351,7 @@
  "app.clearCache.done": "캐시 데이터를 %s 지웠습니다.",
  "app.clearCache.doneSmall": "캐시 데이터를 지웠습니다.",
  "app.clearCache.empty": "캐시가 이미 비어 있습니다.",
- "app.credits.music": "음악: The Cynic Project / cynicmusic.com / pixelsphere.org의 \"Calm Ambient 1 (Synthwave 4k)\" (CC0)",
+ "app.credits.music": "Music: \"Nexus Ambient\", made for Nexus2 (CC0). UI sounds: original Nexus2 sounds (CC0).",
  "app.credits.museumMusic": "아이콘 박물관 음악: \"Another August\", The Cynic Project / cynicmusic.com / pixelsphere.org",
  "app.credits.sfx": "메뉴 효과음: obsydianx.itch.io의 \"Interface SFX Pack 1\" (CC0)",
  "app.keyboard.systemIme": "시스템 키보드 사용",

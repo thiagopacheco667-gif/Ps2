@@ -1,4 +1,6 @@
 {
+ "nexus.bg.particles": "Partículas Nexus",
+ "nexus.bg.particles.desc": "Início e Biblioteca: ○ △ ✕ □ saindo de um brilho suave. Desligado volta a onda.",
  "nexus.ach.title": "Conquistas",
  "nexus.ach.seeAll": "Ver tudo",
  "nexus.ach.signIn": "Entrar no RetroAchievements",
@@ -1508,7 +1510,7 @@
  "app.welcomeBack": "Bem-vindo de volta!",
  "app.menuSfx.imported": "Efeito(s) sonoro(s) %d importados.",
  "app.menuSfx.importNone": "Nenhum arquivo correspondente. Nomeie-os como selecionar, voltar, menu, toggle_on, toggle_off, reset ou controle deslizante.",
- "app.credits.music": "Música: \"Calm Ambient 1 (Synthwave 4k)\" de The Cynic Project / cynicmusic.com / pixelsphere.org (CC0)",
+ "app.credits.music": "Música: \"Nexus Ambient\", feita para o Nexus2 (CC0). Sons da interface: sons originais do Nexus2 (CC0).",
  "app.credits.museumMusic": "Música do Museu de ícones: \"Another August\" de The Cynic Project / cynicmusic.com / pixelsphere.org",
  "app.credits.sfx": "Sons do menu: \"Interface SFX Pack 1\" de obsydianx.itch.io (CC0)",
  "app.library.gridNames.desc": "Biblioteca: mostra o nome de cada jogo abaixo da capa na grade.",

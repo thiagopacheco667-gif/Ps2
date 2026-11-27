@@ -351,7 +351,7 @@
   "app.clearCache.done": "%sのキャッシュデータを消去しました。",
   "app.clearCache.doneSmall": "キャッシュデータを消去しました。",
   "app.clearCache.empty": "キャッシュは既に空です。",
-  "app.credits.music": "音楽：The Cynic Project / cynicmusic.com / pixelsphere.orgによる「Calm Ambient 1 (Synthwave 4k)」（CC0）",
+  "app.credits.music": "Music: \"Nexus Ambient\", made for Nexus2 (CC0). UI sounds: original Nexus2 sounds (CC0).",
   "app.credits.museumMusic": "アイコン博物館の音楽: 「Another August」 The Cynic Project / cynicmusic.com / pixelsphere.org",
   "app.credits.sfx": "メニュー効果音：obsydianx.itch.ioの「Interface SFX Pack 1」（CC0）",
   "app.keyboard.systemIme": "システムのキーボードを使用",
