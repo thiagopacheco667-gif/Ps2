@@ -91,7 +91,7 @@ fun GameDetailScreen(game: GameInfo, onBack: () -> Unit, viewModel: HomeViewMode
                 .verticalScroll(rememberScrollState()).padding(bottom = 28.dp),
         ) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
-                CircleButton(R.drawable.ic_nx_back, str("nexus.common.back"), onBack)
+                CircleButton(R.drawable.ic_nx_back, str("nexus.common.back"), onClick = onBack)
                 Spacer(Modifier.weight(1f))
                 CircleButton(
                     if (favorite) R.drawable.ic_nx_heart_filled else R.drawable.ic_nx_heart,
