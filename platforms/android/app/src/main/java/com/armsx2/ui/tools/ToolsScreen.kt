@@ -54,26 +54,36 @@ private data class ToolEntry(
     val open: (android.content.Context) -> Unit,
 )
 
-private fun toolEntries(): List<ToolEntry> = listOf(
-    ToolEntry("setup.step.bios.title", "nexus.tools.bios.desc", R.drawable.ic_nx_disc) { UiNavigator.openFrom(AppRoute.BiosManager()) },
-    ToolEntry("memcard.title", "nexus.tools.memcard.desc", R.drawable.ic_nx_card) { UiNavigator.openFrom(AppRoute.MemoryCardManager()) },
-    ToolEntry("savestate.title.loadManage", "nexus.tools.saves.desc", R.drawable.ic_nx_save) { UiNavigator.openFrom(AppRoute.SaveManager()) },
-    ToolEntry("ra.title", "nexus.tools.achievements.desc", R.drawable.ic_trophy) { UiNavigator.openFrom(AppRoute.Achievements) },
-    ToolEntry("renderer.section.texturePacks", "nexus.tools.textures.desc", R.drawable.ic_nx_texture) { UiNavigator.openFrom(AppRoute.TextureManager) },
-    ToolEntry("patches.dialog.patchesAndCheats", "nexus.tools.patches.desc", R.drawable.ic_nx_patch) { UiNavigator.openFrom(AppRoute.PatchManager) },
-    ToolEntry("tab.controls", "nexus.tools.controls.desc", R.drawable.ic_nx_pad) { UiNavigator.openFrom(AppRoute.ControllerManager) },
-    ToolEntry("games.overflow.setup", "nexus.tools.folders.desc", R.drawable.ic_nx_folder) { MainActivityRuntime.reopenSetup() },
-    ToolEntry("arcade.title", "nexus.tools.arcade.desc", R.drawable.ic_nx_arcade) { UiNavigator.openFrom(AppRoute.Arcade) },
-    ToolEntry("bugreport.menu.title", "nexus.tools.diagnostics.desc", R.drawable.ic_nx_pulse) { ctx ->
-        com.armsx2.ui.bugreport.BugReportFlow.openGeneral(ctx)
-    },
+private data class ToolGroup(val titleKey: String, val entries: List<ToolEntry>)
+
+private fun toolGroups(): List<ToolGroup> = listOf(
+    ToolGroup("nexus.tools.group.system", listOf(
+        ToolEntry("setup.step.bios.title", "nexus.tools.bios.desc", R.drawable.ic_nx_disc) { UiNavigator.openFrom(AppRoute.BiosManager()) },
+        ToolEntry("games.overflow.setup", "nexus.tools.folders.desc", R.drawable.ic_nx_folder) { MainActivityRuntime.reopenSetup() },
+    )),
+    ToolGroup("nexus.tools.group.data", listOf(
+        ToolEntry("memcard.title", "nexus.tools.memcard.desc", R.drawable.ic_nx_card) { UiNavigator.openFrom(AppRoute.MemoryCardManager()) },
+        ToolEntry("savestate.title.loadManage", "nexus.tools.saves.desc", R.drawable.ic_nx_save) { UiNavigator.openFrom(AppRoute.SaveManager()) },
+    )),
+    ToolGroup("nexus.tools.group.extras", listOf(
+        ToolEntry("ra.title", "nexus.tools.achievements.desc", R.drawable.ic_trophy) { UiNavigator.openFrom(AppRoute.Achievements) },
+        ToolEntry("renderer.section.texturePacks", "nexus.tools.textures.desc", R.drawable.ic_nx_texture) { UiNavigator.openFrom(AppRoute.TextureManager) },
+        ToolEntry("patches.dialog.patchesAndCheats", "nexus.tools.patches.desc", R.drawable.ic_nx_patch) { UiNavigator.openFrom(AppRoute.PatchManager) },
+        ToolEntry("arcade.title", "nexus.tools.arcade.desc", R.drawable.ic_nx_arcade) { UiNavigator.openFrom(AppRoute.Arcade) },
+    )),
+    ToolGroup("nexus.tools.group.input", listOf(
+        ToolEntry("tab.controls", "nexus.tools.controls.desc", R.drawable.ic_nx_pad) { UiNavigator.openFrom(AppRoute.ControllerManager) },
+    )),
+    ToolGroup("nexus.tools.group.help", listOf(
+        ToolEntry("bugreport.menu.title", "nexus.tools.diagnostics.desc", R.drawable.ic_nx_pulse) { UiNavigator.openFrom(AppRoute.Diagnostics) },
+    )),
 )
 
 @Composable
 fun ToolsScreen(modifier: Modifier = Modifier) {
     val colors = MaterialTheme.colorScheme
     val context = LocalContext.current
-    val entries = toolEntries()
+    val groups = toolGroups()
     val firstFocus = rememberInitialFocusRequester()
     Box(
         modifier
@@ -103,17 +113,38 @@ fun ToolsScreen(modifier: Modifier = Modifier) {
                     )
                 }
             }
-            itemsIndexed(entries) { index, entry ->
+            groups.forEachIndexed { gi, group ->
+                item(key = group.titleKey) {
+                    Text(
+                        str(group.titleKey).uppercase(),
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        letterSpacing = 1.sp,
+                        color = colors.onSurfaceVariant,
+                        modifier = Modifier.padding(top = if (gi == 0) 4.dp else 18.dp, bottom = 2.dp),
+                    )
+                }
+                itemsIndexed(group.entries, key = { _, e -> e.titleKey }) { index, entry ->
+                    ToolRow(entry, if (gi == 0 && index == 0) Modifier.focusRequester(firstFocus) else Modifier) { entry.open(context) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ToolRow(entry: ToolEntry, focusModifier: Modifier, onClick: () -> Unit) {
+    val colors = MaterialTheme.colorScheme
                 val shape = RoundedCornerShape(16.dp)
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .heightIn(min = 72.dp)
-                        .then(if (index == 0) Modifier.focusRequester(firstFocus) else Modifier)
+                        .then(focusModifier)
                         .padFocusRing(shape)
                         .clip(shape)
                         .background(colors.surface)
-                        .clickable { entry.open(context) }
+                        .clickable(onClick = onClick)
                         .padding(horizontal = 16.dp, vertical = 14.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(16.dp),
@@ -151,7 +182,4 @@ fun ToolsScreen(modifier: Modifier = Modifier) {
                         modifier = Modifier.size(20.dp),
                     )
                 }
-            }
-        }
-    }
 }

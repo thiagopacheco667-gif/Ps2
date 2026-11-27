@@ -371,6 +371,8 @@ private fun sameDestination(current: AppRoute, target: AppRoute): Boolean = when
     AppRoute.Home -> current is AppRoute.Home
     AppRoute.Library -> current is AppRoute.Library
     AppRoute.Tools -> current is AppRoute.Tools
+    is AppRoute.GameDetail -> current is AppRoute.GameDetail
+    AppRoute.Diagnostics -> current is AppRoute.Diagnostics
     is AppRoute.Settings -> current is AppRoute.Settings
     is AppRoute.BiosManager -> current is AppRoute.BiosManager
     is AppRoute.MemoryCardManager -> current is AppRoute.MemoryCardManager

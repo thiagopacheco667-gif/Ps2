@@ -126,8 +126,13 @@ fun SettingsScreen(
     // Settings-search "jump to control": holds the resolved label of the target row while the
     // freshly-switched tab composes + lays out, then selects it (highlight + scroll into view).
     var pendingJump by remember { mutableStateOf<PendingSettingsJump?>(null) }
+    // Nexus2: Simple (one-tap profiles) or Advanced (every tab). Kept across visits.
+    var simpleMode by remember { mutableStateOf(NexusSettingsMode.isSimple()) }
+    val setSimple: (Boolean) -> Unit = { v -> simpleMode = v; NexusSettingsMode.setSimple(v) }
     val openSearch = {
         SettingsSearch.open { category, label, sections ->
+            // A search result is a row on an Advanced tab.
+            setSimple(false)
             viewModel.selectCategory(category)
             pendingJump = PendingSettingsJump(category, label, sections)
         }
@@ -183,8 +188,8 @@ fun SettingsScreen(
     // chip row doesn't show. About is always skipped: it navigates to another screen, which
     // is not what flicking a shoulder button should do.
     val gameSpecific = scopeGame != null
-    DisposableEffect(displayedCategory, gameSpecific) {
-        SettingsCategoryNav.cycle = { direction ->
+    DisposableEffect(displayedCategory, gameSpecific, simpleMode) {
+        SettingsCategoryNav.cycle = if (simpleMode) null else ({ direction ->
             val tabs = settingsSections().map { it.category }.filterNot {
                 it == SettingsCategory.About ||
                     (gameSpecific && it == SettingsCategory.General) ||
@@ -194,7 +199,7 @@ fun SettingsScreen(
             if (current >= 0 && tabs.isNotEmpty()) {
                 viewModel.selectCategory(tabs[(current + direction + tabs.size) % tabs.size])
             }
-        }
+        })
         onDispose { SettingsCategoryNav.cycle = null }
     }
 
@@ -262,7 +267,29 @@ fun SettingsScreen(
                         )
                     }
                 }
-                if (contentReady) {
+                Box(Modifier.padding(horizontal = 8.dp)) {
+                    SegmentedRow(
+                        label = str("nexus.settings.mode"),
+                        options = listOf(str("nexus.settings.simple"), str("nexus.settings.advanced")),
+                        selectedIndex = if (simpleMode) 0 else 1,
+                        description = str(if (simpleMode) "nexus.settings.simple.desc" else "nexus.settings.advanced.desc"),
+                        onChange = { idx -> setSimple(idx == 0) },
+                    )
+                }
+                if (contentReady && simpleMode) {
+                    Spacer(Modifier.height(10.dp))
+                    GlassPanel(modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp), contentPadding = 16.dp) {
+                        Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)) {
+                            SectionTitle(str("nexus.settings.simple.title"))
+                            Spacer(Modifier.height(12.dp))
+                            com.armsx2.ui.settings.QuickProfilesSection(viewModel.settings.value) {
+                                com.armsx2.ui.InGameOverlay.saveSettings(it)
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(16.dp))
+                }
+                if (contentReady && !simpleMode) {
                     SettingsCategoryBar(
                         selected = displayedCategory,
                         gameSpecific = scopeGame != null,
@@ -380,7 +407,59 @@ private fun SettingsCategoryBar(
             (!gameSpecific && it.category == SettingsCategory.Info) ||
             (gameSpecific && it.category == SettingsCategory.About)
     }
+    // Nexus2: first the seven groups, then (only when the group holds several) its tabs.
+    val visible = sections.map { it.category }.toSet()
+    val groups = SettingsGroup.entries.filter { g -> g.categories.any { it in visible } }
+    val selectedGroup = groupOf(selected)
     Box(Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.horizontalScroll(rememberScrollState()).padding(vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Spacer(Modifier.size(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                groups.forEach { group ->
+                    val active = group == selectedGroup
+                    val target = group.categories.first { it in visible }
+                    val bringIntoView = remember { BringIntoViewRequester() }
+                    LaunchedEffect(active) {
+                        if (active) runCatching { bringIntoView.bringIntoView() }
+                    }
+                    FilterChip(
+                        modifier = Modifier.height(40.dp)
+                            .bringIntoViewRequester(bringIntoView)
+                            .controllerFocusable(
+                                "settings.chip.group.${group.name}",
+                                RoundedCornerShape(12.dp),
+                                onConfirm = { if (!active) onSelect(target) },
+                            ),
+                        selected = active,
+                        onClick = { if (!active) onSelect(target) },
+                        label = { Text(str(group.titleKey), maxLines = 1, style = MaterialTheme.typography.labelLarge) },
+                        leadingIcon = {
+                            Box(Modifier.size(17.dp), contentAlignment = Alignment.Center) {
+                                Text(
+                                    group.glyph,
+                                    fontSize = 13.sp,
+                                    color = if (active) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        },
+                        shape = RoundedCornerShape(12.dp),
+                        colors = FilterChipDefaults.filterChipColors(
+                            containerColor = Color.Transparent,
+                            labelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            selectedContainerColor = MaterialTheme.colorScheme.primary,
+                            selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
+                        ),
+                    )
+                }
+            }
+            Spacer(Modifier.size(8.dp))
+        }
+    }
+    val subSections = sections.filter { selectedGroup != null && it.category in selectedGroup.categories }
+    if (subSections.size > 1) Box(Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier.horizontalScroll(rememberScrollState()).padding(vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -389,7 +468,7 @@ private fun SettingsCategoryBar(
             // lets the final chip scroll fully into view before the trailing inset.
             Spacer(Modifier.size(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                sections.forEach { section ->
+                subSections.forEach { section ->
                     val active = section.category == selected
                     // Keep the SELECTED chip on-screen. controllerFocusable's bringIntoView
                     // fires on FOCUS, but L1/R1 changes the selection without moving focus —
@@ -437,22 +516,46 @@ private fun SettingsCategoryBar(
     }
 }
 
-private fun settingsSections() = listOf(
-    SettingsSection(SettingsCategory.General, "tab.app", "⌂"),
-    SettingsSection(SettingsCategory.Info, "tab.info", "ⓘ"),
-    SettingsSection(SettingsCategory.Performance, "tab.performance", "↯"),
-    SettingsSection(SettingsCategory.Graphics, "tab.renderer", "◫"),
-    SettingsSection(SettingsCategory.Audio, "tab.audio", "♫"),
-    SettingsSection(SettingsCategory.Controls, "tab.controls", "⌁"),
-    SettingsSection(SettingsCategory.Hotkeys, "tab.hotkeys", "⌘"),
-    // Skins sits with the control-related tabs rather than after On-Screen: it is controller
-    // artwork, so people look for it next to Controls and Shortcuts. Requested by Isshin.
-    SettingsSection(SettingsCategory.Skins, "tab.skins", "◈"),
-    SettingsSection(SettingsCategory.Network, "tab.network", "◎"),
-    SettingsSection(SettingsCategory.OnScreen, "tab.overlay", "⊕"),
-    SettingsSection(SettingsCategory.Advanced, "tab.fixes", "⌘"),
-    SettingsSection(SettingsCategory.Patches, "tab.patches", "✦"),
+/** Nexus2: the seven sections of Settings. Each holds one or more of the existing tabs, which keep
+ *  every option they had; the order here is also the L1/R1 order. */
+internal enum class SettingsGroup(val titleKey: String, val glyph: String, val categories: List<SettingsCategory>) {
+    Appearance("nexus.settings.group.appearance", "◐", listOf(SettingsCategory.General, SettingsCategory.OnScreen, SettingsCategory.Skins)),
+    Performance("nexus.settings.group.performance", "↯", listOf(SettingsCategory.Performance)),
+    Graphics("nexus.settings.group.graphics", "◫", listOf(SettingsCategory.Graphics, SettingsCategory.Patches)),
+    Audio("nexus.settings.group.audio", "♫", listOf(SettingsCategory.Audio)),
+    Controls("nexus.settings.group.controls", "⌁", listOf(SettingsCategory.Controls, SettingsCategory.Hotkeys)),
+    System("nexus.settings.group.system", "ⓘ", listOf(SettingsCategory.Info, SettingsCategory.Network)),
+    Advanced("nexus.settings.group.advanced", "⌘", listOf(SettingsCategory.Advanced)),
+}
+
+private val SectionByCategory = mapOf(
+    SettingsCategory.General to SettingsSection(SettingsCategory.General, "tab.app", "⌂"),
+    SettingsCategory.Info to SettingsSection(SettingsCategory.Info, "tab.info", "ⓘ"),
+    SettingsCategory.Performance to SettingsSection(SettingsCategory.Performance, "tab.performance", "↯"),
+    SettingsCategory.Graphics to SettingsSection(SettingsCategory.Graphics, "tab.renderer", "◫"),
+    SettingsCategory.Audio to SettingsSection(SettingsCategory.Audio, "tab.audio", "♫"),
+    SettingsCategory.Controls to SettingsSection(SettingsCategory.Controls, "tab.controls", "⌁"),
+    SettingsCategory.Hotkeys to SettingsSection(SettingsCategory.Hotkeys, "tab.hotkeys", "⌘"),
+    SettingsCategory.Skins to SettingsSection(SettingsCategory.Skins, "tab.skins", "◈"),
+    SettingsCategory.Network to SettingsSection(SettingsCategory.Network, "tab.network", "◎"),
+    SettingsCategory.OnScreen to SettingsSection(SettingsCategory.OnScreen, "tab.overlay", "⊕"),
+    SettingsCategory.Advanced to SettingsSection(SettingsCategory.Advanced, "tab.fixes", "⌘"),
+    SettingsCategory.Patches to SettingsSection(SettingsCategory.Patches, "tab.patches", "✦"),
 )
+
+private fun settingsSections() = SettingsGroup.entries.flatMap { g -> g.categories.mapNotNull { SectionByCategory[it] } }
+
+internal fun groupOf(category: SettingsCategory): SettingsGroup? =
+    SettingsGroup.entries.firstOrNull { category in it.categories }
+
+/** Nexus2: whether Settings opens in Simple mode (profiles only). */
+internal object NexusSettingsMode {
+    private const val KEY = "nexus.settings.simple"
+    fun isSimple(): Boolean = runCatching { com.armsx2.runtime.MainActivityRuntime.prefs.getBoolean(KEY, true) }.getOrDefault(true)
+    fun setSimple(v: Boolean) {
+        runCatching { com.armsx2.runtime.MainActivityRuntime.prefs.edit().putBoolean(KEY, v).apply() }
+    }
+}
 
 @Composable
 private fun CategoryContent(category: SettingsCategory, viewModel: SettingsViewModel) {

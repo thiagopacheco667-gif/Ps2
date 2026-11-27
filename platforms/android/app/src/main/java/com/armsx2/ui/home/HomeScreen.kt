@@ -143,6 +143,10 @@ fun HomeScreen(
     viewModel: HomeViewModel = viewModel(),
 ) {
     val state = viewModel.state.value
+    // Nexus2: a cover tap opens the game's own page; PLAY lives there and in the game menu.
+    val openGame: (GameInfo) -> Unit = { g ->
+        com.armsx2.navigation.UiNavigator.openFrom(com.armsx2.navigation.AppRoute.GameDetail(g))
+    }
     val directories = MainActivityRuntime.romsDirs.value
     val nativeReady = MainActivityRuntime.nativeReady.value
     val context = LocalContext.current
@@ -413,7 +417,7 @@ fun HomeScreen(
             }
             LaunchedEffect(shownRecents) {
                 HomeInputController.setRecents(shownRecents.size) { i ->
-                    shownRecents.getOrNull(i)?.let(viewModel::launch)
+                    shownRecents.getOrNull(i)?.let(openGame)
                 }
             }
             // Camera-follow: while browsing with a controller (Grid zone), keep the
@@ -769,7 +773,7 @@ fun HomeScreen(
                                     coverWidth = ((if (compact) 84f else 100f) * coverScale).dp,
                                     scroll = true,
                                     selectedIndex = recentSel,
-                                    onLaunch = { viewModel.launch(it) },
+                                    onLaunch = { openGame(it) },
                                     onDetails = { menuGame = it },
                                     modifier = Modifier.layout { measurable, constraints ->
                                         val edge = 8.dp.roundToPx()
@@ -810,7 +814,7 @@ fun HomeScreen(
                                         RecentGameCard(
                                             game = game,
                                             selected = index == recentSel,
-                                            onClick = { viewModel.launch(game) },
+                                            onClick = { openGame(game) },
                                             onDetails = { menuGame = game },
                                         )
                                     }
@@ -857,7 +861,7 @@ fun HomeScreen(
                                         coverWidth = ((if (compact) 84f else 100f) * coverScale).dp,
                                         scroll = true,
                                         selectedIndex = -1,
-                                        onLaunch = { viewModel.launch(it) },
+                                        onLaunch = { openGame(it) },
                                         onDetails = { menuGame = it },
                                         modifier = Modifier.layout { measurable, constraints ->
                                             val edge = 8.dp.roundToPx()
@@ -882,7 +886,7 @@ fun HomeScreen(
                                             RecentGameCard(
                                                 game = game,
                                                 selected = false,
-                                                onClick = { viewModel.launch(game) },
+                                                onClick = { openGame(game) },
                                                 onDetails = { menuGame = game },
                                             )
                                         }
@@ -946,7 +950,7 @@ fun HomeScreen(
                             slotsPerRow = perShelf,
                             selectedIndex = gridSelected,
                             startIndex = rowIndex * perShelf,
-                            onLaunch = { viewModel.launch(it) },
+                            onLaunch = { openGame(it) },
                             onDetails = { menuGame = it },
                             // Bleed past the grid's 8dp side padding so the glass shelf
                             // reaches both screen edges instead of floating inset.
@@ -973,14 +977,14 @@ fun HomeScreen(
                                 game = game,
                                 selected = index == gridSelected,
                                 onSelect = { viewModel.setSelection(index) },
-                                onLaunch = { viewModel.launch(game) },
+                                onLaunch = { openGame(game) },
                                 onDetails = { menuGame = game },
                             )
                         } else {
                             GameListCard(
                                 game = game,
                                 selected = index == gridSelected,
-                                onClick = { viewModel.setSelection(index); viewModel.launch(game) },
+                                onClick = { viewModel.setSelection(index); openGame(game) },
                                 onDetails = { menuGame = game },
                             )
                         }
@@ -2548,7 +2552,8 @@ object HomeInputController {
             HomeZone.Recents -> recentLauncher?.invoke(recentIndex.intValue)
             HomeZone.Grid -> {
                 val game = viewModel.selectedGame() ?: return false
-                viewModel.launch(game)
+                // Nexus2: A opens the game's page (PLAY is focused there), same as a tap.
+                com.armsx2.navigation.UiNavigator.openFrom(com.armsx2.navigation.AppRoute.GameDetail(game))
             }
         }
         return true

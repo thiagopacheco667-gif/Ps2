@@ -124,10 +124,12 @@ fun AppNavigation() {
                     onOpenGameSettings = { UiNavigator.navigate(AppRoute.Settings(game = it)) },
                 )
                 AppRoute.Tools -> com.armsx2.ui.tools.ToolsScreen()
+                is AppRoute.GameDetail -> com.armsx2.ui.game.GameDetailScreen(destination.game, onBack = UiNavigator::up)
+                AppRoute.Diagnostics -> com.armsx2.ui.tools.DiagnosticsScreen(onBack = UiNavigator::up)
                 is AppRoute.Settings -> SettingsScreen(
                     initialCategory = destination.category,
                     game = destination.game,
-                    onBack = UiNavigator::home,
+                    onBack = UiNavigator::up,
                     onOpenAbout = { UiNavigator.navigate(AppRoute.About) },
                 )
                 is AppRoute.BiosManager -> BiosManagerScreen(
