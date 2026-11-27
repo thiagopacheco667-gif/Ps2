@@ -5,6 +5,10 @@ import com.armsx2.GameInfo
 
 sealed interface AppRoute {
     data object Home : AppRoute
+    // Nexus2: the "Jogos" tab of the bottom bar (the full library).
+    data object Library : AppRoute
+    // Nexus2: the "Ferramentas" tab, a hub over the manager screens below.
+    data object Tools : AppRoute
     data class Settings(
         val category: SettingsCategory = SettingsCategory.General,
         val game: GameInfo? = null,
@@ -48,11 +52,59 @@ enum class SettingsCategory {
     About,
 }
 
+/** Nexus2: the four sections of the bottom bar / side rail, in bar order. */
+enum class MainTab(val route: AppRoute) {
+    Home(AppRoute.Home),
+    Library(AppRoute.Library),
+    Tools(AppRoute.Tools),
+    Settings(AppRoute.Settings()),
+}
+
+/** The bar section this route IS, or null for a sub-screen (managers, per-game settings, About…),
+ *  which shows no bar and has its own back button. */
+fun AppRoute.mainTab(): MainTab? = when (this) {
+    AppRoute.Home -> MainTab.Home
+    AppRoute.Library -> MainTab.Library
+    AppRoute.Tools -> MainTab.Tools
+    is AppRoute.Settings -> if (game == null) MainTab.Settings else null
+    else -> null
+}
+
 object UiNavigator {
     val route = mutableStateOf<AppRoute>(AppRoute.Home)
     val drawerOpen = mutableStateOf(false)
 
+    // Nexus2: where a sub-screen's back button returns to. Set only by [openFrom] (the Tools hub);
+    // every other way in (drawer, game menu) leaves it null, which means Home, as before.
+    private var parent: AppRoute? = null
+
     fun navigate(destination: AppRoute) {
+        parent = null
+        go(destination)
+    }
+
+    /** Open [destination] so that its back button returns to the screen it was opened from. */
+    fun openFrom(destination: AppRoute) {
+        val from = route.value
+        go(destination)
+        parent = from
+    }
+
+    /** Switch bar section. No sub-menu blip: it is a peer screen, not a level deeper. */
+    fun selectTab(tab: MainTab) {
+        parent = null
+        route.value = tab.route
+        drawerOpen.value = false
+    }
+
+    /** A sub-screen's own back button. */
+    fun up() {
+        val target = parent ?: AppRoute.Home
+        parent = null
+        route.value = target
+    }
+
+    private fun go(destination: AppRoute) {
         val changed = route.value != destination
         route.value = destination
         drawerOpen.value = false
@@ -80,11 +132,13 @@ object UiNavigator {
             }
             AppRoute.Home -> Unit
             is AppRoute.BiosManager -> {
-                route.value = if (current.returnToArcade) AppRoute.Arcade else AppRoute.Home
+                route.value = if (current.returnToArcade) AppRoute.Arcade else (parent ?: AppRoute.Home)
+                parent = null
                 return true
             }
             else -> {
-                route.value = AppRoute.Home
+                route.value = parent ?: AppRoute.Home
+                parent = null
                 return true
             }
         }

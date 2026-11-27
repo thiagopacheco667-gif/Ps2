@@ -161,6 +161,21 @@ fun str(key: String): String {
  */
 private val BASE_EN: Map<String, String> = mapOf(
     // --- Nexus2 ---
+    "nexus.nav.home" to "Home",
+    "nexus.nav.games" to "Games",
+    "nexus.nav.tools" to "Tools",
+    "nexus.nav.settings" to "Settings",
+    "nexus.tools.subtitle" to "Everything that manages your files, saves and add-ons.",
+    "nexus.tools.bios.desc" to "Choose the PS2 BIOS from your own console and check that it is valid.",
+    "nexus.tools.memcard.desc" to "Create, insert, rename and back up virtual memory cards.",
+    "nexus.tools.saves.desc" to "Browse, load and delete save states of every game.",
+    "nexus.tools.achievements.desc" to "Sign in to RetroAchievements and see your progress.",
+    "nexus.tools.textures.desc" to "Install and manage HD texture packs per game.",
+    "nexus.tools.patches.desc" to "Turn on widescreen, blur-removal and other patches, and add cheats.",
+    "nexus.tools.controls.desc" to "Map Bluetooth and USB controllers and manage profiles.",
+    "nexus.tools.folders.desc" to "Change the games folder, BIOS and data locations.",
+    "nexus.tools.arcade.desc" to "Namco System 246/256 arcade games: folder, BIOS and imports.",
+    "nexus.tools.diagnostics.desc" to "Collect logs and device details to report a problem.",
     "nexus.section.quick" to "Quick profiles",
     "nexus.profile.label" to "Graphics profile",
     "nexus.profile.description" to "Sets resolution, blending accuracy, anisotropic filtering and MTVU in one tap. Balanced is recommended for the Poco X7 Pro (Mali-G720). Each value can still be changed below.",

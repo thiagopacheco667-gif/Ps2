@@ -3695,6 +3695,15 @@ open class MainActivityRuntime : ComponentActivity() {
                 // Swallow the UP too, so a stray shoulder release can't leak to the pad.
                 return true
             }
+            // Nexus2: outside the settings tabs, L1/R1 switch bottom-bar sections — but only with
+            // the library in front (no game, or the library opened over one), never in game.
+            val cycleSection = com.armsx2.navigation.MainTabsNav.cycle
+            val libraryInFront = eState.value == EmuState.STOPPED || WindowImpl.showLibrary.value
+            if (cycleSection != null && libraryInFront && !WindowImpl.overlayVisible.value) {
+                if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0)
+                    cycleSection(if (kc == KeyEvent.KEYCODE_BUTTON_L1) -1 else 1)
+                return true
+            }
         }
         // Hold the hardware/software BACK button to exit the app (Dolphin-style).
         // Scoped to IN-GAME with no overlay/menu up — where a short BACK press does
