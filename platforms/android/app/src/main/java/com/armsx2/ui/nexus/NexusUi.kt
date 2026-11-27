@@ -231,18 +231,18 @@ fun NexusIconButton(@DrawableRes icon: Int, description: String, tint: Color? = 
  * drawn on top by the caller. Blur needs Android 12+; older systems get the dimmed cover instead.
  */
 @Composable
-fun NexusGameBackdrop(game: GameInfo, modifier: Modifier = Modifier, content: @Composable BoxScope.() -> Unit = {}) {
+fun NexusGameBackdrop(game: GameInfo, modifier: Modifier = Modifier, art: Boolean = true, content: @Composable BoxScope.() -> Unit = {}) {
     val bg = MaterialTheme.colorScheme.background
     Box(modifier.clip(RoundedCornerShape(0.dp))) {
         // matchParentSize: the layers take the size the content gives the Box (it sits in scrolling
         // columns, where fillMaxSize would ask for infinite height).
-        GameCoverArt(
+        if (art) GameCoverArt(
             game,
             Modifier.matchParentSize()
                 .graphicsLayer { scaleX = 1.35f; scaleY = 1.35f; alpha = if (Build.VERSION.SDK_INT >= 31) 0.85f else 0.45f }
                 .then(if (Build.VERSION.SDK_INT >= 31) Modifier.blur(28.dp) else Modifier),
         )
-        Box(
+        if (art) Box(
             Modifier.matchParentSize().background(
                 Brush.verticalGradient(0f to bg.copy(alpha = 0.35f), 0.55f to bg.copy(alpha = 0.55f), 1f to bg),
             ),

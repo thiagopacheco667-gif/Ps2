@@ -290,58 +290,12 @@ fun HomeScreen(
             if (!LibraryScreensaver.showing.value) {
                 val libraryBg = LibraryBackground.uri.value
                 if (libraryBg == null) {
-                    // Default: the live PS3-XMB wave (XmbGlView, a GLES3 port of linkev's
-                    // grid-displacement mesh, matching iOS). When GL can't init (older Mali without
-                    // float-texture filtering, or any EGL failure), fall back to LibraryWaveBackground,
-                    // a procedural PPSSPP-style animated background on the hardware 2D Canvas (no
-                    // GLES3) that reads the same colour prefs as the GL wave. The bundled still is the
-                    // placeholder shown during GL startup and sits hidden behind the wave once it is up.
-                    // Custom backgrounds below override all of this.
-                    if (LibraryBackground.particles.value && !LibraryBackground.flurry.value) {
-                        // Nexus2 default: controller-symbol particles on the 2D Canvas (any GPU).
-                        NexusParticleBackground(Modifier.fillMaxSize())
-                    } else if (LibraryBackground.flurry.value) {
-                        // Flurry falls back to the 2D backdrop when GL cannot come up, as XmbGlView does.
-                        var flurryGl by remember { mutableStateOf<Boolean?>(null) }
-                        if (flurryGl == false) {
-                            LibraryWaveBackground(Modifier.fillMaxSize())
-                        } else {
-                            AndroidView(
-                                factory = {
-                                    // currentSpec() resolves which saver, and a "random" preset to a
-                                    // concrete one. Read once here at view creation, so random means
-                                    // once per library open, not once per frame.
-                                    SaverGlView(it, LibraryBackground.currentSpec()).apply {
-                                        onGlStatus = { ok -> flurryGl = ok }
-                                    }
-                                },
-                                modifier = Modifier.fillMaxSize(),
-                                // Stops the render thread. Without it the EGL thread outlives the
-                                // composition and keeps drawing to a dead surface.
-                                onRelease = { it.stop() },
-                            )
-                        }
-                    } else if (LibraryBackground.animated2D.value) {
-                        // The user chose the lightweight 2D animated wave everywhere: the same
-                        // backdrop GL-fail devices get, skipping the GLES3 XmbGlView.
-                        LibraryWaveBackground(Modifier.fillMaxSize())
-                    } else {
-                        var xmbGlState by remember { mutableStateOf<Boolean?>(null) } // null=starting, true=up, false=failed
-                        if (xmbGlState == false) {
-                            LibraryWaveBackground(Modifier.fillMaxSize())
-                        } else {
-                            Image(
-                                painter = painterResource(R.drawable.library_bg_xmb),
-                                contentDescription = null,
-                                modifier = Modifier.fillMaxSize(),
-                                contentScale = ContentScale.Crop,
-                            )
-                        }
-                        AndroidView(
-                            factory = { XmbGlView(it).apply { onGlStatus = { ok -> xmbGlState = ok } } },
-                            modifier = Modifier.fillMaxSize(),
-                        )
-                    }
+                    // Nexus2: the running / last-played game's art, blurred under a gradient
+                    // (NexusArtBackground). Static: no wave, particles or saver runs behind the library.
+                    com.armsx2.ui.nexus.NexusArtBackground(
+                        com.armsx2.ui.nexus.nexusBackdropGame(state.recentGames.filter { !com.armsx2.HiddenGames.isHidden(it) }),
+                        Modifier.fillMaxSize(),
+                    )
                 } else {
                     // User-picked still image / GIF (Coil handles both).
                     AsyncImage(

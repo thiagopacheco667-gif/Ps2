@@ -63,3 +63,10 @@ baseado no [PCSX2](https://pcsx2.net). Importado sem modificações do commit `4
 - [~] Fase 1: menu do jogo em Geral (só ações), Vídeo (renderizador/resolução/proporção/filtros primeiro, resto recolhido), Emulação (compatibilidade + correções avançadas recolhidas), Desempenho, Controles (+ OSD), Sistema (saves, memory cards, patches, info do jogo, GS dump, relatório). Abas com ícone + texto, descrições em 1 linha, seções planas, cabeçalho com "Configurações personalizadas" quando o jogo tem ajustes próprios.
 - [~] Fase 2: Biblioteca sem a seção de recentes (o histórico continua e aparece só no Início); filtros Todos / Favoritos / regiões presentes; toque abre a página do jogo; segurar: Favoritar, Configurações individuais, Informações, Remover da biblioteca (é o "ocultar": o arquivo nunca é apagado; ⋮ → Mostrar jogos removidos).
 - [~] Fase 3: Inter (OFL) para textos/valores, fonte de título mantida; o switch global de patches de blur não aparece mais nas páginas por jogo; GPUs sem fonte de driver (Mali-G720 e outras Mali 5ª geração) não veem lista de downloads, opções Turnip nem texto de Adreno, e o driver do sistema nunca é trocado sozinho; textos de Ajustes → App dizem se afetam Início ou Biblioteca.
+
+## Fundo com a arte do jogo
+
+- O fundo do Início e da Biblioteca segue o jogo em execução e, se nenhum estiver rodando, o último jogado: a capa ampliada, com desfoque (Android 12+) e gradiente escuro. Sem histórico, ou se a capa não carregar, fica um fundo estático do Nexus2 (preto com brilho violeta/azul). Nunca a arte de outro jogo.
+- Não há arte de cena no repositório de capas, então a "arte" é a capa (a capa personalizada do usuário primeiro).
+- A imagem é decodificada pequena (270×400) e fica no cache de memória e disco do Coil. A única animação é um crossfade de 450 ms quando o jogo muda.
+- Removidos do caminho padrão: onda XMB (GL), onda 2D, partículas e protetores como fundo. Os arquivos continuam no código (o protetor de tela por inatividade segue existindo). Imagem de fundo própria do usuário continua tendo prioridade.
