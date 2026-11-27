@@ -16,6 +16,23 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.dp
+import android.content.res.Configuration
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.Modifier
 import com.armsx2.ui.achievements.AchievementsScreen
@@ -40,10 +57,28 @@ fun AppNavigation() {
 
     BackHandler(enabled = true) { UiNavigator.back() }
 
+    // Nexus2: bottom bar (portrait) / side rail (landscape) on the four top-level sections only.
+    // The bar is layered over the content rather than placed beside it, so the AnimatedContent
+    // below keeps its place in the tree (and its screens their state) when the bar comes and goes.
+    val tab = route.mainTab()
+    val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val density = LocalDensity.current
+    var barHeight by remember { mutableStateOf(0.dp) }
+    var railWidth by remember { mutableStateOf(0.dp) }
+    val contentModifier = when {
+        tab == null -> Modifier
+        landscape -> Modifier
+            .consumeWindowInsets(WindowInsets.safeDrawing.only(WindowInsetsSides.Start))
+            .padding(start = railWidth)
+        else -> Modifier
+            .consumeWindowInsets(WindowInsets.navigationBars)
+            .padding(bottom = barHeight)
+    }
+
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         AnimatedContent(
             targetState = route,
-            modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
+            modifier = Modifier.fillMaxSize().then(contentModifier).background(MaterialTheme.colorScheme.background),
             transitionSpec = {
                 val enter = fadeIn(
                     animationSpec = tween(
@@ -87,6 +122,12 @@ fun AppNavigation() {
                     onOpenMenu = { UiNavigator.drawerOpen.value = true },
                     onOpenGameSettings = { UiNavigator.navigate(AppRoute.Settings(game = it)) },
                 )
+                // Until the new dashboard (stage 5) takes over Início, both sections show the library.
+                AppRoute.Library -> HomeScreen(
+                    onOpenMenu = { UiNavigator.drawerOpen.value = true },
+                    onOpenGameSettings = { UiNavigator.navigate(AppRoute.Settings(game = it)) },
+                )
+                AppRoute.Tools -> com.armsx2.ui.tools.ToolsScreen()
                 is AppRoute.Settings -> SettingsScreen(
                     initialCategory = destination.category,
                     game = destination.game,
@@ -94,18 +135,18 @@ fun AppNavigation() {
                     onOpenAbout = { UiNavigator.navigate(AppRoute.About) },
                 )
                 is AppRoute.BiosManager -> BiosManagerScreen(
-                    onBack = if (destination.returnToArcade) ({ UiNavigator.navigate(AppRoute.Arcade) }) else UiNavigator::home,
+                    onBack = if (destination.returnToArcade) ({ UiNavigator.navigate(AppRoute.Arcade) }) else UiNavigator::up,
                     game = destination.game,
                 )
                 is AppRoute.MemoryCardManager ->
-                    MemoryCardScreen(onBack = UiNavigator::home, game = destination.game)
+                    MemoryCardScreen(onBack = UiNavigator::up, game = destination.game)
                 is AppRoute.SaveManager ->
-                    SaveManagerScreen(onBack = UiNavigator::home, focusSerial = destination.focusSerial)
-                AppRoute.ControllerManager -> ControllerManagerScreen(onBack = UiNavigator::home)
-                AppRoute.PatchManager -> PatchManagerScreen(onBack = UiNavigator::home)
-                AppRoute.TextureManager -> TextureManagerScreen(onBack = UiNavigator::home)
-                AppRoute.Arcade -> ArcadeScreen(onBack = UiNavigator::home)
-                AppRoute.Achievements -> AchievementsScreen(onBack = UiNavigator::home)
+                    SaveManagerScreen(onBack = UiNavigator::up, focusSerial = destination.focusSerial)
+                AppRoute.ControllerManager -> ControllerManagerScreen(onBack = UiNavigator::up)
+                AppRoute.PatchManager -> PatchManagerScreen(onBack = UiNavigator::up)
+                AppRoute.TextureManager -> TextureManagerScreen(onBack = UiNavigator::up)
+                AppRoute.Arcade -> ArcadeScreen(onBack = UiNavigator::up)
+                AppRoute.Achievements -> AchievementsScreen(onBack = UiNavigator::up)
                 AppRoute.Language -> LanguageScreen(
                     onBack = { UiNavigator.navigate(AppRoute.Settings(SettingsCategory.General)) },
                 )
@@ -117,6 +158,24 @@ fun AppNavigation() {
                 AppRoute.Friends -> FriendsScreen(onBack = UiNavigator::home)
                 AppRoute.RemotePlay -> com.armsx2.remoteplay.RemotePlayScreen(onBack = UiNavigator::home)
                 AppRoute.About -> AboutScreen(onBack = UiNavigator::home)
+            }
+        }
+
+        if (tab != null) {
+            if (landscape) {
+                MainSideRail(
+                    current = tab,
+                    modifier = Modifier.align(Alignment.CenterStart).onSizeChanged {
+                        railWidth = with(density) { it.width.toDp() }
+                    },
+                )
+            } else {
+                MainBottomBar(
+                    current = tab,
+                    modifier = Modifier.align(Alignment.BottomCenter).onSizeChanged {
+                        barHeight = with(density) { it.height.toDp() }
+                    },
+                )
             }
         }
 
