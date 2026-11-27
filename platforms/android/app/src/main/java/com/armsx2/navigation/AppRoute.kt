@@ -9,6 +9,10 @@ sealed interface AppRoute {
     data object Library : AppRoute
     // Nexus2: the "Ferramentas" tab, a hub over the manager screens below.
     data object Tools : AppRoute
+    // Nexus2: one game's own page (cover, play, saves, per-game settings).
+    data class GameDetail(val game: GameInfo) : AppRoute
+    // Nexus2: Tools sub-pages.
+    data object Diagnostics : AppRoute
     data class Settings(
         val category: SettingsCategory = SettingsCategory.General,
         val game: GameInfo? = null,
@@ -74,12 +78,14 @@ object UiNavigator {
     val route = mutableStateOf<AppRoute>(AppRoute.Home)
     val drawerOpen = mutableStateOf(false)
 
-    // Nexus2: where a sub-screen's back button returns to. Set only by [openFrom] (the Tools hub);
-    // every other way in (drawer, game menu) leaves it null, which means Home, as before.
-    private var parent: AppRoute? = null
+    // Nexus2: where sub-screens' back buttons return to, innermost last. Filled only by [openFrom]
+    // (Tools hub, game page, Home); every other way in (drawer, game menu) clears it, which means
+    // Home, as before.
+    private val parents = ArrayDeque<AppRoute>()
+    private fun popParent(): AppRoute? = parents.removeLastOrNull()
 
     fun navigate(destination: AppRoute) {
-        parent = null
+        parents.clear()
         go(destination)
     }
 
@@ -87,21 +93,19 @@ object UiNavigator {
     fun openFrom(destination: AppRoute) {
         val from = route.value
         go(destination)
-        parent = from
+        if (from != destination) parents.addLast(from)
     }
 
     /** Switch bar section. No sub-menu blip: it is a peer screen, not a level deeper. */
     fun selectTab(tab: MainTab) {
-        parent = null
+        parents.clear()
         route.value = tab.route
         drawerOpen.value = false
     }
 
     /** A sub-screen's own back button. */
     fun up() {
-        val target = parent ?: AppRoute.Home
-        parent = null
-        route.value = target
+        route.value = popParent() ?: AppRoute.Home
     }
 
     private fun go(destination: AppRoute) {
@@ -132,13 +136,11 @@ object UiNavigator {
             }
             AppRoute.Home -> Unit
             is AppRoute.BiosManager -> {
-                route.value = if (current.returnToArcade) AppRoute.Arcade else (parent ?: AppRoute.Home)
-                parent = null
+                route.value = if (current.returnToArcade) AppRoute.Arcade else (popParent() ?: AppRoute.Home)
                 return true
             }
             else -> {
-                route.value = parent ?: AppRoute.Home
-                parent = null
+                route.value = popParent() ?: AppRoute.Home
                 return true
             }
         }

@@ -121,7 +121,7 @@ fun HomeDashboard(viewModel: HomeViewModel = viewModel()) {
             val moreRecents = recents.drop(1)
             if (moreRecents.isNotEmpty()) {
                 SectionLabel("nexus.home.recent", actionKey = "nexus.home.seeAll") { UiNavigator.selectTab(MainTab.Library) }
-                CoverRow(moreRecents.take(10), forceEn) { viewModel.launch(it) }
+                CoverRow(moreRecents.take(10), forceEn) { UiNavigator.openFrom(AppRoute.GameDetail(it)) }
             }
 
             SectionLabel("nexus.home.favorites")
@@ -134,7 +134,7 @@ fun HomeDashboard(viewModel: HomeViewModel = viewModel()) {
                     modifier = Modifier.padding(horizontal = 20.dp),
                 )
             } else {
-                CoverRow(favorites.take(12), forceEn) { viewModel.launch(it) }
+                CoverRow(favorites.take(12), forceEn) { UiNavigator.openFrom(AppRoute.GameDetail(it)) }
             }
 
             SectionLabel("nexus.home.system")
