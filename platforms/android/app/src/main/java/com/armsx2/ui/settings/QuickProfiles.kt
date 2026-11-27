@@ -91,7 +91,13 @@ private const val DEINTERLACE_ADAPTIVE_TFF = 8
 private const val DISPLAY_FILTER_SHARP = 2
 
 @Composable
-internal fun QuickProfilesSection(s: Settings, apply: (Settings) -> Unit) {
+internal fun QuickProfilesSection(
+    s: Settings,
+    // Nexus2: the bundled blur-patch switch is app-wide (BlurRemoval), so a per-game page must not
+    // show it as if it were a setting of that game. Defaults to hidden whenever a game is in scope.
+    showGlobalBlurPatches: Boolean = LocalGameOverrideScope.current == null,
+    apply: (Settings) -> Unit,
+) {
     val profiles = graphicsProfiles()
     // "Custom" is not a preset: it is shown whenever the values match none of the profiles (the
     // player tuned something by hand), and picking it changes nothing, so those tweaks are kept.
@@ -111,6 +117,7 @@ internal fun QuickProfilesSection(s: Settings, apply: (Settings) -> Unit) {
     ) { on ->
         apply(if (on) noBlurApplied(s) else noBlurRemoved(s))
     }
+    if (!showGlobalBlurPatches) return
     SettingsDivider()
     val auto = remember { mutableStateOf(BlurRemoval.isEnabled()) }
     ToggleRow(

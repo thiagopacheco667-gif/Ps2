@@ -88,13 +88,17 @@ fun DriverManagerSection() {
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        SectionTitle(str("backend.gpuDriver.label"), str("backend.gpuDriver.description"))
+        // Nexus2: the Turnip/Adreno wording only on Adreno; other GPUs get a vendor-neutral line.
+        val gpuModel = remember { com.armsx2.GpuInfo.rendererName() }
+        SectionTitle(
+            str("backend.gpuDriver.label"),
+            str(if (CustomDriver.isAdreno(gpuModel)) "backend.gpuDriver.description" else "nexus.driver.description"),
+        )
 
         // Eden-style hint: the detected GPU and the best custom-driver source for it. Adreno
         // maps to a tuned Turnip pack, a supported Mali to our MaliSX2; other GPUs (Xclipse,
         // PowerVR, an unsupported Mali) run the built-in system driver best. Probes the system
         // GL_RENDERER once (cached).
-        val gpuModel = remember { com.armsx2.GpuInfo.rendererName() }
         val gpuRec = remember(gpuModel) { com.armsx2.GpuInfo.recommendation(gpuModel) }
         Surface(
             shape = RoundedCornerShape(16.dp),
@@ -174,8 +178,16 @@ fun DriverManagerSection() {
             )
         }
 
+        // Nexus2: no source drives this GPU (e.g. Mali-G720) → no download list and no Turnip/Adreno
+        // offers; the system driver stays selected unless the user imports a pack themselves.
+        val downloadable = remember(gpuModel) { CustomDriver.hasDownloadSource(gpuModel) }
+        if (!downloadable) Text(
+            str("nexus.driver.noCompatible"),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(
+            if (downloadable) OutlinedButton(
                 shape = RoundedCornerShape(13.dp),
                 modifier = Modifier.controllerFocusable(
                     "driver.toggleDownloads",
@@ -213,7 +225,7 @@ fun DriverManagerSection() {
             ) { Text(str("backend.driver.import")) }
         }
 
-        if (showRemote) {
+        if (showRemote && downloadable) {
             when {
                 loadingRemote -> Row(verticalAlignment = Alignment.CenterVertically) {
                     CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
@@ -259,7 +271,8 @@ fun DriverManagerSection() {
         message?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
 
         // Only an installed driver reads these, so they appear once there is one.
-        if (installed.isNotEmpty()) TurnipOptions()
+        // Turnip's options mean nothing to a Mali/Xclipse driver: Adreno only.
+        if (installed.isNotEmpty() && (gpuModel == null || CustomDriver.isAdreno(gpuModel))) TurnipOptions()
     }
 }
 

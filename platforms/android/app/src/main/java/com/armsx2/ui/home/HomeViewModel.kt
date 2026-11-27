@@ -34,6 +34,9 @@ data class HomeUiState(
     /** Nexus2: library narrowed to favourites / to games imported more than once. */
     val favoritesOnly: Boolean = false,
     val filter: LibraryFilter = LibraryFilter.All,
+    /** Nexus2: region chip (USA / Europe / Japan …) or null; regions come from the games present. */
+    val regionFilter: String? = null,
+    val regions: List<String> = emptyList(),
     val duplicatesOnly: Boolean = false,
     /** Nexus2: how many library entries share a serial with another entry. */
     val duplicateCount: Int = 0,
@@ -178,7 +181,12 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     /** Toggle whether hidden games are shown (so they can be un-hidden). */
     /** Nexus2: the chip row (All / PS2 / Favourites / Recent). */
     fun setFilter(value: LibraryFilter) {
-        state.value = buildState(state.value.copy(filter = value))
+        state.value = buildState(state.value.copy(filter = value, regionFilter = null))
+    }
+
+    /** Nexus2: region chip; null clears it. Combines with "All" only. */
+    fun setRegionFilter(value: String?) {
+        state.value = buildState(state.value.copy(filter = LibraryFilter.All, regionFilter = value))
     }
 
     /** Nexus2: the ⋮ menu's "Favourites only" toggle. */
@@ -231,6 +239,10 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         val activeCategory = base.categoryFilter?.takeIf { it in com.armsx2.GameCategories.names() }
         val members = activeCategory?.let { com.armsx2.GameCategories.members(it) }
         val duplicateKeys = com.armsx2.Duplicates.keysOf(base.allGames)
+        // Nexus2: region chips only for regions that actually exist in the library, most games first.
+        val regions = base.allGames.mapNotNull { it.region }.groupingBy { it }.eachCount()
+            .entries.sortedByDescending { it.value }.map { it.key }
+        val activeRegion = base.regionFilter?.takeIf { it in regions }
         val filtered = base.allGames.filter { game ->
             val query = base.query.trim()
             (!base.favoritesOnly || com.armsx2.Favorites.isFavorite(game)) &&
@@ -240,6 +252,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                 LibraryFilter.Favorites -> com.armsx2.Favorites.isFavorite(game)
                 LibraryFilter.Recent -> recentOrder.containsKey(game.uri.toString())
             } &&
+            (activeRegion == null || game.region == activeRegion) &&
             (!base.duplicatesOnly || game.uri.toString() in duplicateKeys) &&
             (members == null || game.settingsKey?.let { it in members } == true) &&
             com.armsx2.ArcadeOnly.shows(game) &&
@@ -274,6 +287,8 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             visibleGames = sorted,
             recentGames = recents,
             duplicateCount = duplicateKeys.size,
+            regions = regions,
+            regionFilter = activeRegion,
             selectedIndex = base.selectedIndex.coerceIn(0, (sorted.size - 1).coerceAtLeast(0)),
         )
     }

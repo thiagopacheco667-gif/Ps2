@@ -233,7 +233,6 @@ fun HomeScreen(
     // touch keyboard (LibraryKeyboard). The search bar is no longer an editable TextField, so the
     // Android system IME never appears. (Registered once the library has loaded.)
     val showSearch = LibraryChromePreferences.showSearch.value
-    val showRecents = LibraryChromePreferences.showRecents.value
     val searchPlaceholder = str("games.search.placeholder")
     LaunchedEffect(state.initialized, showSearch) {
         if (!showSearch && viewModel.state.value.query.isNotEmpty()) viewModel.setQuery("")
@@ -412,11 +411,9 @@ fun HomeScreen(
             }
             // The Recently-Played games shown above the grid (empty while searching);
             // register them so the controller's Recents zone can launch them.
-            val shownRecents = if (showRecents && state.recentGames.isNotEmpty() && state.query.isBlank()) {
-                state.recentGames.take(10)
-            } else {
-                emptyList()
-            }
+            // Nexus2: Recently Played belongs to Home (HomeDashboard) only. The Library tab no
+            // longer shows the row; the history itself (state.recentGames) is untouched.
+            val shownRecents = emptyList<GameInfo>()
             LaunchedEffect(shownRecents) {
                 HomeInputController.setRecents(shownRecents.size) { i ->
                     shownRecents.getOrNull(i)?.let(openGame)
@@ -641,14 +638,17 @@ fun HomeScreen(
                     }
                 }
 
-                // Nexus2: filter chips (All / PS2 / Favourites / Recent) and the count line.
+                // Nexus2: filter chips (All / Favourites / regions present) and the count line.
                 if (state.initialized) {
                     item(span = { GridItemSpan(maxLineSpan) }, key = "nexus-filters") {
                         LibraryFilterRow(
                             selected = state.filter,
+                            region = state.regionFilter,
+                            regions = state.regions,
                             count = state.visibleGames.size,
                             sortLabel = str(if (state.sort == HomeSort.RecentlyPlayed) "games.overflow.sortRecent" else "games.overflow.sortTitle"),
                             onSelect = viewModel::setFilter,
+                            onRegion = viewModel::setRegionFilter,
                         )
                     }
                 }
@@ -1133,10 +1133,28 @@ fun HomeScreen(
                         )
                     }
                 }
-                GameMenuAction("⚙", str("action.settings"), "game-menu.settings") {
+                GameMenuAction("⚙", str("nexus.lib.menu.gameSettings"), "game-menu.settings") {
                     menuGame = null
                     onOpenGameSettings(game)
                 }
+                // Nexus2: the game's page (cover, serial, region, play time, compatibility).
+                GameMenuAction("ⓘ", str("nexus.lib.menu.info"), "game-menu.info") {
+                    menuGame = null
+                    openGame(game)
+                }
+                // Nexus2: "Remove from library" = the existing hide flag. The file on disk is never
+                // touched; ⋮ → Show hidden brings it back ("Return to library").
+                val hidden = com.armsx2.HiddenGames.isHidden(game)
+                GameMenuAction(if (hidden) "↩" else "✕", str(if (hidden) "nexus.lib.menu.restore" else "nexus.lib.menu.remove"), "game-menu.hide") {
+                    viewModel.setHidden(game, !hidden)
+                    menuGame = null
+                }
+                if (!hidden) Text(
+                    str("nexus.lib.menu.removeNote"),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                )
                 // Per-game BIOS: open the BIOS manager scoped to THIS game (no need to load it),
                 // since the BIOS manager isn't reachable from the in-game menu.
                 GameMenuAction("📀", str("bios.perGame.menu"), "game-menu.bios") {
@@ -1243,11 +1261,6 @@ fun HomeScreen(
                 GameMenuAction("🏷️", str("games.categories"), "game-menu.categories") {
                     menuGame = null
                     categoryGame = game
-                }
-                val hidden = com.armsx2.HiddenGames.isHidden(game)
-                GameMenuAction(if (hidden) "◍" else "🚫", str(if (hidden) "games.unhide" else "games.hide"), "game-menu.hide") {
-                    viewModel.setHidden(game, !hidden)
-                    menuGame = null
                 }
                 GameMenuAction("⚑", str("bugreport.menu.game"), "game-menu.report") {
                     menuGame = null
@@ -2772,36 +2785,47 @@ private fun ShelfGameCard(game: GameInfo, width: Dp, reflectionHeight: Dp, selec
 
 
 
-/** Nexus2: one row of filter chips and "N games · Sorted by …" under the search field. */
+/** Nexus2: one row of filter chips (Todos / Favoritos / one chip per region in the library)
+ *  and "N games · Sorted by …" under the search field. Recently played lives on Home only. */
 @Composable
-private fun LibraryFilterRow(selected: LibraryFilter, count: Int, sortLabel: String, onSelect: (LibraryFilter) -> Unit) {
+private fun LibraryFilterRow(
+    selected: LibraryFilter,
+    region: String?,
+    regions: List<String>,
+    count: Int,
+    sortLabel: String,
+    onSelect: (LibraryFilter) -> Unit,
+    onRegion: (String?) -> Unit,
+) {
     val colors = MaterialTheme.colorScheme
-    val options = listOf(
-        LibraryFilter.All to "nexus.lib.all",
-        LibraryFilter.PS2 to "nexus.lib.ps2",
-        LibraryFilter.Favorites to "nexus.lib.favorites",
-        LibraryFilter.Recent to "nexus.lib.recent",
-    )
+    @Composable
+    fun Chip(label: String, active: Boolean, onClick: () -> Unit) {
+        val shape = RoundedCornerShape(20.dp)
+        Text(
+            label,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            color = if (active) colors.onPrimary else colors.onSurface,
+            modifier = Modifier
+                .padFocusRing(shape)
+                .clip(shape)
+                .background(if (active) colors.primary else colors.surface)
+                .clickable(onClick = onClick)
+                .padding(horizontal = 18.dp, vertical = 10.dp),
+        )
+    }
     Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
         Row(
             Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            options.forEach { (filter, key) ->
-                val active = filter == selected
-                val shape = RoundedCornerShape(20.dp)
-                Text(
-                    str(key),
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = if (active) colors.onPrimary else colors.onSurface,
-                    modifier = Modifier
-                        .padFocusRing(shape)
-                        .clip(shape)
-                        .background(if (active) colors.primary else colors.surface)
-                        .clickable { onSelect(filter) }
-                        .padding(horizontal = 18.dp, vertical = 10.dp),
-                )
+            Chip(str("nexus.lib.all"), region == null && selected != LibraryFilter.Favorites) { onSelect(LibraryFilter.All) }
+            Chip(str("nexus.lib.favorites"), region == null && selected == LibraryFilter.Favorites) { onSelect(LibraryFilter.Favorites) }
+            // Only when the library spans more than one region — a single chip would filter nothing.
+            if (regions.size > 1) regions.forEach { r ->
+                val label = (com.armsx2.regionFlagFor(r)?.let { "$it " } ?: "") + regionLabel(r)
+                Chip(label, region == r) { onRegion(if (region == r) null else r) }
             }
         }
         Text(
@@ -2811,4 +2835,12 @@ private fun LibraryFilterRow(selected: LibraryFilter, count: Int, sortLabel: Str
             modifier = Modifier.padding(top = 10.dp, start = 2.dp),
         )
     }
+}
+
+/** Nexus2: localized region name; unknown regions keep the GameDB label. */
+@Composable
+private fun regionLabel(region: String): String {
+    val key = "nexus.region." + region.replace(" ", "")
+    val text = str(key)
+    return if (text == key) region else text
 }

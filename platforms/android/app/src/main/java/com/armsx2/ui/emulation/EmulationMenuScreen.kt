@@ -269,7 +269,8 @@ fun EmulationMenuScreen(viewModel: EmulationMenuViewModel = viewModel()) {
                         )
                     }
                     Surface(
-                        modifier = Modifier.width(76.dp).fillMaxHeight(),
+                        // Nexus2: wide enough for each tab's name under its icon.
+                        modifier = Modifier.width(108.dp).fillMaxHeight(),
                         shape = RoundedCornerShape(28.dp),
                         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.94f),
                         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)),
@@ -401,10 +402,6 @@ private fun MenuPage(
                 Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                // Only the panes with rows that take a mark; the others would show a key to nothing.
-                if (state.tab != EmulationMenuTab.Controls && state.tab != EmulationMenuTab.Achievements) {
-                    com.armsx2.ui.settings.OverrideLegend(inset = 4.dp)
-                }
                 when (state.tab) {
                     EmulationMenuTab.Session -> SessionPane(state, viewModel)
                     EmulationMenuTab.Graphics -> GraphicsPane(state, viewModel)
@@ -412,9 +409,17 @@ private fun MenuPage(
                     // shared Settings state (same as the rest of the overlay); its
                     // controls are SettingsControllerNav items, so the pause menu's
                     // content-pane nav drives them for free.
-                    EmulationMenuTab.Fixes -> com.armsx2.ui.settings.FixesTab(InGameOverlay.settingsState)
+                    EmulationMenuTab.Fixes -> {
+                        CompatibilitySection(state, viewModel)
+                        com.armsx2.ui.settings.CollapsibleSection(str("nexus.ingame.advancedFixes"), initiallyExpanded = false) {
+                            com.armsx2.ui.settings.FixesTab(InGameOverlay.settingsState)
+                        }
+                    }
                     EmulationMenuTab.Performance -> PerformancePane(state, viewModel)
-                    EmulationMenuTab.Controls -> ControlsPane(state, viewModel)
+                    EmulationMenuTab.Controls -> {
+                        ControlsPane(state, viewModel)
+                        InGameUiSection(state, viewModel)
+                    }
                     EmulationMenuTab.Options -> OptionsPane(state, viewModel)
                     EmulationMenuTab.Achievements -> AchievementsPane(state, viewModel)
                 }
@@ -467,22 +472,31 @@ private fun MenuRailTab(tab: EmulationMenuTab, active: Boolean, onSelect: (Emula
     val bring = remember { BringIntoViewRequester() }
     val label = str(tab.titleKey)
     LaunchedEffect(active) { if (active) runCatching { bring.bringIntoView() } }
+    // Nexus2: icon AND name, so the rail reads without guessing; the selected tab is filled.
     Surface(
         onClick = { onSelect(tab) },
-        modifier = Modifier.size(56.dp).bringIntoViewRequester(bring).semantics { contentDescription = label },
-        shape = RoundedCornerShape(18.dp),
-        color = if (active) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
-        border = BorderStroke(
-            if (active) 2.dp else 1.dp,
-            if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.34f),
-        ),
+        modifier = Modifier.width(92.dp).bringIntoViewRequester(bring).semantics { contentDescription = label },
+        shape = RoundedCornerShape(16.dp),
+        color = if (active) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
     ) {
-        Box(contentAlignment = Alignment.Center) {
+        Column(
+            Modifier.padding(vertical = 10.dp, horizontal = 4.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            androidx.compose.material3.Icon(
+                androidx.compose.ui.res.painterResource(tabIcon(tab)),
+                contentDescription = null,
+                tint = if (active) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(22.dp),
+            )
+            Spacer(Modifier.height(5.dp))
             Text(
-                text = tabGlyph(tab),
-                fontSize = 23.sp,
-                fontWeight = FontWeight.Bold,
-                color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                label,
+                fontSize = 12.sp,
+                fontWeight = if (active) FontWeight.Bold else FontWeight.Medium,
+                color = if (active) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
     }
@@ -524,11 +538,11 @@ private fun MenuTab(tab: EmulationMenuTab, active: Boolean, onSelect: (Emulation
                 else MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
             ) {
                 Box(contentAlignment = Alignment.Center) {
-                    Text(
-                        text = tabGlyph(tab),
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    androidx.compose.material3.Icon(
+                        androidx.compose.ui.res.painterResource(tabIcon(tab)),
+                        contentDescription = null,
+                        tint = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp),
                     )
                 }
             }
@@ -549,6 +563,18 @@ private fun MenuTab(tab: EmulationMenuTab, active: Boolean, onSelect: (Emulation
 // glyph. Performance uses the high-voltage emoji so it reads as a yellow lightning bolt.
 // Options carries the settings gear; the full-settings shortcut below the rail divider uses
 // a distinct "open" glyph so there aren't two gears.
+/** Nexus2: one stroke icon per tab (the emoji glyphs differed by device font). */
+private fun tabIcon(tab: EmulationMenuTab): Int = when (tab) {
+    EmulationMenuTab.Session -> com.armsx2.R.drawable.ic_nx_play
+    EmulationMenuTab.Graphics -> com.armsx2.R.drawable.ic_nx_texture
+    EmulationMenuTab.Fixes -> com.armsx2.R.drawable.ic_nx_pulse
+    EmulationMenuTab.Performance -> com.armsx2.R.drawable.ic_nx_gauge
+    EmulationMenuTab.Controls -> com.armsx2.R.drawable.ic_nx_pad
+    EmulationMenuTab.Options -> com.armsx2.R.drawable.ic_nx_settings
+    EmulationMenuTab.Achievements -> com.armsx2.R.drawable.ic_trophy
+}
+
+@Suppress("unused")
 private fun tabGlyph(tab: EmulationMenuTab): String = when (tab) {
     EmulationMenuTab.Session -> "☰"
     EmulationMenuTab.Graphics -> "🖥️"
@@ -606,40 +632,22 @@ private fun MenuHeader(
             // leaves s_current_crc at 0 — the emulog shows the loader computing the real CRC and
             // the VM then reporting 00000000. When that happens, identify the image instead, which
             // is the same path the Info tab and the library's long-press sheet already take.
-            val resolvedCRC by androidx.compose.runtime.produceState(gameCRC, gameCRC, game?.uri) {
-                value = gameCRC.ifBlank {
-                    game?.uri?.let { com.armsx2.DiscIdentity.resolve(it, game.serial) }.orEmpty()
-                }
+            // Nexus2: serial/CRC and rich presence moved to Sistema › game info; the header only
+            // says which game this is and whether it has its own settings.
+            val custom = androidx.compose.runtime.remember(game?.settingsKey, InGameOverlay.settingsState.value) {
+                game?.settingsKey?.let { com.armsx2.config.ConfigStore.loadOverrides(it)?.length() ?: 0 }?.let { it > 0 } == true
             }
-            val identity = buildList {
-                game?.serial?.takeIf { it.isNotBlank() }?.let(::add)
-                resolvedCRC.takeIf { it.isNotBlank() }?.let { add("CRC $it") }
-            }.joinToString("  ·  ")
-            if (identity.isNotBlank()) {
-                Spacer(Modifier.height(2.dp))
+            if (custom) {
+                Spacer(Modifier.height(4.dp))
                 Text(
-                    identity,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            // RetroAchievements rich presence — the live "what you're doing" line
-            // (e.g. "Pooh & Piglet are in a Scaring Contest"). Restored from the old UI.
-            if (richPresence.isNotBlank()) {
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    richPresence,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
+                    str("nexus.ingame.customSettings"),
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary,
                 )
             }
         }
 
-        // Clock + battery, same cluster as the library toolbar. Worth having here specifically:
-        // this menu is what you open mid-session on a handheld, so it's exactly when you want to
-        // know the time and how much charge is left. Not controllerFocusable — it's a readout.
         Spacer(Modifier.width(8.dp))
         com.armsx2.ui.common.LibraryStatusCluster(
             Modifier.align(Alignment.CenterVertically),
@@ -685,30 +693,20 @@ private fun SessionPane(state: EmulationMenuUiState, viewModel: EmulationMenuVie
             ) { MainActivityRuntime.instance?.toggleFastForward(); viewModel.resume() },
             MenuAction(str("memcard.restart"), str("action.reset"), "↻", null, MainActivityRuntime::restart),
             MenuAction(str("action.swapDisc"), str("action.swapDisc.detail"), "⏏", null, MainActivityRuntime::promptSwapDisc),
-            // Here and not only in Settings > Renderer, where it sat at the bottom of a long page:
-            // a GS dump is what gets asked for when someone reports a graphics bug, and this is
-            // one tap from the game. It also resumes, because the dump is of the NEXT frame the GS
-            // draws, and none is drawn while this menu holds the game paused.
-            //
-            // It is now a choice: keep the dump in the snaps folder as before, or start a problem
-            // report with a fresh dump of this scene.
-            MenuAction(str("renderer.gsDump.label"), str("gsdump.quick.detail"), "⧉", null) {
-                com.armsx2.ui.bugreport.askGsDumpChoice {
-                    runCatching { kr.co.iefriends.pcsx2.NativeApp.captureGsDump(1) }
-                    android.widget.Toast.makeText(context, gsDumpQueued, android.widget.Toast.LENGTH_LONG).show()
-                    viewModel.resume()
-                }
-            },
-            // Best place to report graphics and slowness: the scene is still here to capture.
-            MenuAction(str("bugreport.menu.title"), str("bugreport.menu.detail"), "⚑", null) {
-                com.armsx2.ui.bugreport.BugReportFlow.openInGame(context)
-            },
         ) + arcadeActions(viewModel) + listOf(
             MenuAction(str("action.close"), MainActivityRuntime.currentGame.value?.title.orEmpty(), "■", Danger) {
                 MainActivityRuntime.closeGame()
             },
         ),
     )
+
+}
+
+/** Nexus2: pause-button and quick-menu placement (was in Geral; it is a controls matter). */
+@Composable
+private fun InGameUiSection(state: EmulationMenuUiState, viewModel: EmulationMenuViewModel) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val settings = state.settings
     // On-screen display — a single universal on/off (old-UI style); the per-stat
     // toggles live in All Settings. Plus a frame-limit switch so fast-forward is one
     // tap away.
@@ -801,6 +799,13 @@ private fun SessionPane(state: EmulationMenuUiState, viewModel: EmulationMenuVie
             valueLabel = str(if (menuSide) "overlay.quickMenuSide.left" else "overlay.quickMenuSide.right"),
         ) { _ -> com.armsx2.ui.QuickMenuSide.set(!menuSide) }
     }
+}
+
+/** Nexus2: save / load state slots (was in Geral; lives in Sistema now). */
+@Composable
+private fun SaveStateSection(state: EmulationMenuUiState, viewModel: EmulationMenuViewModel) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val settings = state.settings
     SectionCard(str("savestate.title.loadManage")) {
         // When each slot was last written. Ten chips numbered 1..10 say nothing about which
         // hold anything or how old they are, so picking a slot to overwrite after a long
@@ -874,6 +879,75 @@ private fun SessionPane(state: EmulationMenuUiState, viewModel: EmulationMenuVie
             }
             CompactAction(str("touch.stateAction.load"), "↧", Modifier.weight(1f)) {
                 com.armsx2.ui.WindowImpl.openInGameScreen(com.armsx2.ui.InGameScreen.LoadState)
+            }
+        }
+    }
+}
+
+/** Nexus2: compatibility fixes, at the top of Emulação (the rest of the fixes are collapsed). */
+@Composable
+private fun CompatibilitySection(state: EmulationMenuUiState, viewModel: EmulationMenuViewModel) {
+    val settings = state.settings
+    SectionCard(str("nexus.ingame.compat")) {
+    MenuSwitchRow(str("perf.fix.gamedbFixes"), settings.emuCore.enableGameFixes, field = "enableGameFixes") {
+        viewModel.updateSettings { current -> current.copy(emuCore = current.emuCore.copy(enableGameFixes = it)) }
+    }
+    MenuSwitchRow(str("perf.fix.skipMpeg"), settings.emuCore.gamefixSkipMpeg, field = "gamefixSkipMpeg") {
+        viewModel.updateSettings { current -> current.copy(emuCore = current.emuCore.copy(enableGameFixes = true, gamefixSkipMpeg = it)) }
+    }
+    MenuSwitchRow(str("perf.fix.fmvSoftware"), settings.emuCore.gamefixSoftwareRendererFmv, field = "gamefixSoftwareRendererFmv") {
+        viewModel.updateSettings { current -> current.copy(emuCore = current.emuCore.copy(enableGameFixes = true, gamefixSoftwareRendererFmv = it)) }
+    }
+    MenuSwitchRow(str("perf.fix.eeTiming"), settings.emuCore.gamefixEETiming, field = "gamefixEETiming") {
+        viewModel.updateSettings { current -> current.copy(emuCore = current.emuCore.copy(enableGameFixes = true, gamefixEETiming = it)) }
+    }
+    MenuSwitchRow(str("perf.fix.instantDma"), settings.emuCore.gamefixInstantDma, field = "gamefixInstantDma") {
+        viewModel.updateSettings { current -> current.copy(emuCore = current.emuCore.copy(enableGameFixes = true, gamefixInstantDma = it)) }
+    }
+    MenuSwitchRow(str("perf.fix.blitFps"), settings.emuCore.gamefixBlitInternalFps, field = "gamefixBlitInternalFps") {
+        viewModel.updateSettings { current -> current.copy(emuCore = current.emuCore.copy(enableGameFixes = true, gamefixBlitInternalFps = it)) }
+    }
+    MenuSwitchRow(str("perf.fix.vuAddSub"), settings.emuCore.gamefixVuAddSub, field = "gamefixVuAddSub") {
+        viewModel.updateSettings { current -> current.copy(emuCore = current.emuCore.copy(enableGameFixes = true, gamefixVuAddSub = it)) }
+    }
+    MenuSwitchRow(str("perf.fix.vuSync"), settings.emuCore.gamefixVuSync, field = "gamefixVuSync") {
+        viewModel.updateSettings { current -> current.copy(emuCore = current.emuCore.copy(enableGameFixes = true, gamefixVuSync = it)) }
+    }    }
+}
+
+/** Nexus2: serial / CRC / format, GS dump and problem report. */
+@Composable
+private fun NexusGameInfoSection(state: EmulationMenuUiState, viewModel: EmulationMenuViewModel) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val gsDumpQueued = str("gsdump.quick.queued")
+    val game = MainActivityRuntime.currentGame.value
+    SectionCard(str("nexus.ingame.gameInfo")) {
+        // Same fallback the header used: an ISO boot can report CRC 0, so identify the image.
+        val crcResolved by androidx.compose.runtime.produceState(state.gameCRC, state.gameCRC, game?.uri) {
+            value = state.gameCRC.ifBlank { game?.uri?.let { com.armsx2.DiscIdentity.resolve(it, game.serial) }.orEmpty() }
+        }
+        val crc = crcResolved.ifBlank { "—" }
+        listOf(
+            str("nexus.ingame.serial") to (game?.serial?.takeIf { it.isNotBlank() } ?: "—"),
+            "CRC" to crc,
+            str("nexus.game.format") to (game?.extension?.ifBlank { null } ?: "—"),
+        ).forEach { (k, v) ->
+            Row(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                Text(k, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
+                Text(v, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            CompactAction(str("renderer.gsDump.label"), "⧉", Modifier.weight(1f)) {
+                com.armsx2.ui.bugreport.askGsDumpChoice {
+                    runCatching { kr.co.iefriends.pcsx2.NativeApp.captureGsDump(1) }
+                    android.widget.Toast.makeText(context, gsDumpQueued, android.widget.Toast.LENGTH_LONG).show()
+                    viewModel.resume()
+                }
+            }
+            CompactAction(str("bugreport.menu.title"), "⚑", Modifier.weight(1f)) {
+                com.armsx2.ui.bugreport.BugReportFlow.openInGame(context)
             }
         }
     }
@@ -1016,16 +1090,6 @@ private fun GraphicsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
     // Texture packs, straight after the resolution they are usually paired with. They used to be
     // split between the bottom of this page (the switches) and the Options page (the manager),
     // which for one of the most-used features on the device was two places too deep.
-    CompactAction(str("renderer.section.texturePacks"), "▣", Modifier.fillMaxWidth(), viewModel::openTextures)
-    MenuSwitchRow(str("renderer.loadTexturePacks.label"), settings.graphics.loadTextureReplacements, field = "loadTextureReplacements") {
-        viewModel.updateSettings { current -> current.copy(graphics = current.graphics.copy(loadTextureReplacements = it)) }
-    }
-    MenuSwitchRow(str("renderer.asyncTextureLoading.label"), settings.graphics.loadTextureReplacementsAsync, field = "loadTextureReplacementsAsync") {
-        viewModel.updateSettings { current -> current.copy(graphics = current.graphics.copy(loadTextureReplacementsAsync = it)) }
-    }
-    MenuSwitchRow(str("renderer.precacheTexturePacks.label"), settings.graphics.precacheTextureReplacements, field = "precacheTextureReplacements") {
-        viewModel.updateSettings { current -> current.copy(graphics = current.graphics.copy(precacheTextureReplacements = it)) }
-    }
     HorizontalOptions(
         title = str("renderer.displayMode.label"),
         options = listOf(
@@ -1043,6 +1107,24 @@ private fun GraphicsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
         onSelect = viewModel::setAspectRatio,
         field = "aspectRatio",
     )
+    HorizontalOptions(
+        title = str("renderer.displayFilter.label"),
+        options = listOf("Nearest", "Smooth", "Sharp").mapIndexed { index, label -> index to label },
+        selected = settings.graphics.displayBilinear,
+        onSelect = { value -> viewModel.updateSettings { it.copy(graphics = it.graphics.copy(displayBilinear = value)) } },
+        field = "displayBilinear",
+    )
+    com.armsx2.ui.settings.CollapsibleSection(str("nexus.ingame.videoAdvanced"), initiallyExpanded = false) {
+    CompactAction(str("renderer.section.texturePacks"), "▣", Modifier.fillMaxWidth(), viewModel::openTextures)
+    MenuSwitchRow(str("renderer.loadTexturePacks.label"), settings.graphics.loadTextureReplacements, field = "loadTextureReplacements") {
+        viewModel.updateSettings { current -> current.copy(graphics = current.graphics.copy(loadTextureReplacements = it)) }
+    }
+    MenuSwitchRow(str("renderer.asyncTextureLoading.label"), settings.graphics.loadTextureReplacementsAsync, field = "loadTextureReplacementsAsync") {
+        viewModel.updateSettings { current -> current.copy(graphics = current.graphics.copy(loadTextureReplacementsAsync = it)) }
+    }
+    MenuSwitchRow(str("renderer.precacheTexturePacks.label"), settings.graphics.precacheTextureReplacements, field = "precacheTextureReplacements") {
+        viewModel.updateSettings { current -> current.copy(graphics = current.graphics.copy(precacheTextureReplacements = it)) }
+    }
     // Screen orientation from in-game: whether a game plays better in portrait or landscape is
     // found out by trying it, and that meant leaving for All Settings each time. Same values as
     // the Renderer tab's row, and applied straight away the same way.
@@ -1124,13 +1206,6 @@ private fun GraphicsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
         selected = settings.output.deinterlaceMode,
         onSelect = { value -> viewModel.updateSettings { it.copy(output = it.output.copy(deinterlaceMode = value)) } },
         field = "deinterlaceMode",
-    )
-    HorizontalOptions(
-        title = str("renderer.displayFilter.label"),
-        options = listOf("Nearest", "Smooth", "Sharp").mapIndexed { index, label -> index to label },
-        selected = settings.graphics.displayBilinear,
-        onSelect = { value -> viewModel.updateSettings { it.copy(graphics = it.graphics.copy(displayBilinear = value)) } },
-        field = "displayBilinear",
     )
     HorizontalOptions(
         title = str("renderer.tvShader.label"),
@@ -1217,6 +1292,7 @@ private fun GraphicsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
         onParamsChange = { next -> viewModel.updateSettings { it.copy(graphics = it.graphics.copy(shaderChainParams = next)) } },
     )
     com.armsx2.ui.common.ShaderManagerSection()
+    }
 }
 
 @Composable
@@ -1536,7 +1612,7 @@ private fun OptionsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVie
     val settings = state.settings
     // Item 3: gateway to the full per-game settings (all categories the compact menu omits:
     // OSD, Skins, Audio, Hotkeys, Network, Recompiler, ...).
-    CompactAction(str("action.allSettings"), "⚙", Modifier.fillMaxWidth(), viewModel::openFullSettings)
+    SaveStateSection(state, viewModel)
     Spacer(Modifier.height(6.dp))
     // In-game access to the manager screens (the library drawer's Memory Cards /
     // Patches & Cheats / Controller mapping) — open over the paused game.
@@ -1582,30 +1658,10 @@ private fun OptionsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVie
     MenuSwitchRow(str("perf.fix.skipBios"), settings.emuCore.enableFastBoot, field = "enableFastBoot") {
         viewModel.updateSettings { current -> current.copy(emuCore = current.emuCore.copy(enableFastBoot = it)) }
     }
-    MenuSwitchRow(str("perf.fix.gamedbFixes"), settings.emuCore.enableGameFixes, field = "enableGameFixes") {
-        viewModel.updateSettings { current -> current.copy(emuCore = current.emuCore.copy(enableGameFixes = it)) }
-    }
-    MenuSwitchRow(str("perf.fix.skipMpeg"), settings.emuCore.gamefixSkipMpeg, field = "gamefixSkipMpeg") {
-        viewModel.updateSettings { current -> current.copy(emuCore = current.emuCore.copy(enableGameFixes = true, gamefixSkipMpeg = it)) }
-    }
-    MenuSwitchRow(str("perf.fix.fmvSoftware"), settings.emuCore.gamefixSoftwareRendererFmv, field = "gamefixSoftwareRendererFmv") {
-        viewModel.updateSettings { current -> current.copy(emuCore = current.emuCore.copy(enableGameFixes = true, gamefixSoftwareRendererFmv = it)) }
-    }
-    MenuSwitchRow(str("perf.fix.eeTiming"), settings.emuCore.gamefixEETiming, field = "gamefixEETiming") {
-        viewModel.updateSettings { current -> current.copy(emuCore = current.emuCore.copy(enableGameFixes = true, gamefixEETiming = it)) }
-    }
-    MenuSwitchRow(str("perf.fix.instantDma"), settings.emuCore.gamefixInstantDma, field = "gamefixInstantDma") {
-        viewModel.updateSettings { current -> current.copy(emuCore = current.emuCore.copy(enableGameFixes = true, gamefixInstantDma = it)) }
-    }
-    MenuSwitchRow(str("perf.fix.blitFps"), settings.emuCore.gamefixBlitInternalFps, field = "gamefixBlitInternalFps") {
-        viewModel.updateSettings { current -> current.copy(emuCore = current.emuCore.copy(enableGameFixes = true, gamefixBlitInternalFps = it)) }
-    }
-    MenuSwitchRow(str("perf.fix.vuAddSub"), settings.emuCore.gamefixVuAddSub, field = "gamefixVuAddSub") {
-        viewModel.updateSettings { current -> current.copy(emuCore = current.emuCore.copy(enableGameFixes = true, gamefixVuAddSub = it)) }
-    }
-    MenuSwitchRow(str("perf.fix.vuSync"), settings.emuCore.gamefixVuSync, field = "gamefixVuSync") {
-        viewModel.updateSettings { current -> current.copy(emuCore = current.emuCore.copy(enableGameFixes = true, gamefixVuSync = it)) }
-    }
+    // Nexus2: the game's technical identity and the two diagnostics actions, out of Geral.
+    NexusGameInfoSection(state, viewModel)
+    Spacer(Modifier.height(6.dp))
+    CompactAction(str("action.allSettings"), "⚙", Modifier.fillMaxWidth(), viewModel::openFullSettings)
 }
 
 @Composable
@@ -1829,23 +1885,21 @@ private fun ActionGrid(actions: List<MenuAction>) {
 
 @Composable
 internal fun SectionCard(title: String, field: String? = null, content: @Composable ColumnScope.() -> Unit) {
+    // Nexus2: a titled group on a hairline, not a bordered card: the menu lists groups, not tiles.
     val tint = com.armsx2.ui.settings.rowTint(field, fillAlpha = 0.42f, outlineAlpha = 0.34f)
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(17.dp),
-        color = tint.container,
-        border = BorderStroke(1.dp, tint.border),
-    ) {
-        Column(Modifier.padding(13.dp)) {
-            Text(
-                title,
-                modifier = Modifier.overrideMarker(tint, MaterialTheme.typography.titleSmall.lineHeight),
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold,
-            )
-            Spacer(Modifier.height(8.dp))
-            content()
-        }
+    Column(Modifier.fillMaxWidth().padding(top = 6.dp)) {
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
+        Spacer(Modifier.height(10.dp))
+        Text(
+            title.uppercase(),
+            modifier = Modifier.padding(horizontal = 4.dp).overrideMarker(tint, MaterialTheme.typography.labelMedium.lineHeight),
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 1.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(8.dp))
+        content()
     }
 }
 
@@ -1981,7 +2035,8 @@ private fun MenuSwitchRow(
                         description,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 3,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
             }

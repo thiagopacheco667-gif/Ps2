@@ -246,6 +246,11 @@ object CustomDriver {
         return installed
     }
 
+    /** Nexus2: whether any download source lists packs for [renderer]. False on GPUs no source
+     *  drives (Mali-G720 and the other 5th-gen Mali, PowerVR, an unreadable renderer), where the
+     *  settings page hides the download list instead of opening onto an empty one. */
+    fun hasDownloadSource(renderer: String?): Boolean = DRIVER_SOURCES.any { it.supports(renderer) }
+
     private val DRIVER_SOURCES = listOf(
         MALISX2_SOURCE,
         ARMSX2_TURNIP_SOURCE,
