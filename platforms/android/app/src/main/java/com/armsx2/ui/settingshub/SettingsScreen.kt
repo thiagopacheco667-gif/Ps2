@@ -47,6 +47,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.font.FontWeight
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 import com.armsx2.GameInfo
@@ -103,8 +104,12 @@ fun SettingsScreen(
     game: GameInfo?,
     onBack: () -> Unit,
     onOpenAbout: () -> Unit = {},
+    /** Nexus2: name of the [SettingsGroup] page this screen shows; null = every group (the
+     *  in-game and legacy entries). */
+    group: String? = null,
     viewModel: SettingsViewModel = viewModel(),
 ) {
+    val onlyGroup = group?.let { g -> SettingsGroup.entries.firstOrNull { it.name == g } }
     // Effective settings scope. Starts on the scope we were opened for (per-game when a game was
     // passed, else global). A running game — even when opened from the global entry — becomes the
     // per-game target so the top toggle can switch between Global and that game. Switching just
@@ -123,11 +128,12 @@ fun SettingsScreen(
         com.armsx2.runtime.MainActivityRuntime.launchGame(launchPath, g)
     }
     var showReset by remember { mutableStateOf(false) }
+    var showResetGame by remember { mutableStateOf(false) }
     // Settings-search "jump to control": holds the resolved label of the target row while the
     // freshly-switched tab composes + lays out, then selects it (highlight + scroll into view).
     var pendingJump by remember { mutableStateOf<PendingSettingsJump?>(null) }
     // Nexus2: Simple (one-tap profiles) or Advanced (every tab). Kept across visits.
-    var simpleMode by remember { mutableStateOf(NexusSettingsMode.isSimple()) }
+    var simpleMode by remember { mutableStateOf(false) }
     val setSimple: (Boolean) -> Unit = { v -> simpleMode = v; NexusSettingsMode.setSimple(v) }
     val openSearch = {
         SettingsSearch.open { category, label, sections ->
@@ -135,6 +141,13 @@ fun SettingsScreen(
             setSimple(false)
             viewModel.selectCategory(category)
             pendingJump = PendingSettingsJump(category, label, sections)
+        }
+    }
+    // Nexus2: the Ajustes page's search button opens this screen and asks for the search.
+    LaunchedEffect(Unit) {
+        if (SettingsSearchLauncher.pending) {
+            SettingsSearchLauncher.pending = false
+            openSearch()
         }
     }
     val screenScroll = rememberScrollState(initial = SettingsScrollMemory.lastOffset)
@@ -194,6 +207,9 @@ fun SettingsScreen(
                 it == SettingsCategory.About ||
                     (gameSpecific && it == SettingsCategory.General) ||
                     (!gameSpecific && it == SettingsCategory.Info)
+            }.filter { c ->
+                (onlyGroup == null || c in onlyGroup.categories) &&
+                    (!gameSpecific || groupOf(c)?.perGame == true)
             }
             val current = tabs.indexOf(displayedCategory)
             if (current >= 0 && tabs.isNotEmpty()) {
@@ -212,7 +228,7 @@ fun SettingsScreen(
                     .padding(bottom = 8.dp),
             ) {
                 ArmsTopBar(
-                    title = scopeGame?.title ?: str("action.settings"),
+                    title = scopeGame?.title ?: onlyGroup?.let { str(it.titleKey) } ?: str("action.settings"),
                     subtitle = if (scopeGame == null) str("scope.global") else str("scope.game"),
                     leading = {
                         // Registered in the settings nav so a controller reaches it (up from the chips).
@@ -267,15 +283,6 @@ fun SettingsScreen(
                         )
                     }
                 }
-                Box(Modifier.padding(horizontal = 8.dp)) {
-                    SegmentedRow(
-                        label = str("nexus.settings.mode"),
-                        options = listOf(str("nexus.settings.simple"), str("nexus.settings.advanced")),
-                        selectedIndex = if (simpleMode) 0 else 1,
-                        description = str(if (simpleMode) "nexus.settings.simple.desc" else "nexus.settings.advanced.desc"),
-                        onChange = { idx -> setSimple(idx == 0) },
-                    )
-                }
                 if (contentReady && simpleMode) {
                     Spacer(Modifier.height(10.dp))
                     GlassPanel(modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp), contentPadding = 16.dp) {
@@ -289,16 +296,29 @@ fun SettingsScreen(
                     }
                     Spacer(Modifier.height(16.dp))
                 }
+                if (contentReady && !simpleMode && scopeGame != null) {
+                    NexusGameSettingsHeader(
+                        game = scopeGame!!,
+                        settings = viewModel.settings.value,
+                        onResetAll = { showResetGame = true },
+                    )
+                }
                 if (contentReady && !simpleMode) {
                     SettingsCategoryBar(
                         selected = displayedCategory,
                         gameSpecific = scopeGame != null,
+                        onlyGroup = onlyGroup,
                         onSelect = { category ->
                             if (category == SettingsCategory.About) onOpenAbout() else viewModel.selectCategory(category)
                         },
                     )
                     Spacer(Modifier.height(10.dp))
+                    // Nexus2: in a game's scope, rows this game overrides get "↺ Global".
+                    val overriddenFields = remember(viewModel.settings.value, scopeGame) { viewModel.overriddenFields() }
                     CompositionLocalProvider(
+                        com.armsx2.ui.settings.LocalGameOverrideScope provides scopeGame?.let {
+                            com.armsx2.ui.settings.GameOverrideScope(overriddenFields) { f -> viewModel.revertFieldToGlobal(f) }
+                        },
                         LocalSettingsSearchOpenSections provides (
                             pendingJump?.takeIf { it.category == displayedCategory }?.sections?.toSet()
                                 ?: emptySet()
@@ -319,6 +339,20 @@ fun SettingsScreen(
         SettingsSearchOverlay(this, scopeGame != null)
     }
 
+    if (showResetGame) {
+        com.armsx2.ui.common.ConfirmOverlay(
+            title = str("nexus.gameSettings.resetAll"),
+            message = str("nexus.gameSettings.resetAll.desc"),
+            confirmLabel = str("action.reset"),
+            destructive = true,
+            idPrefix = "settings-reset-game",
+            onConfirm = {
+                viewModel.resetWholeGame()
+                showResetGame = false
+            },
+            onDismiss = { showResetGame = false },
+        )
+    }
     if (showReset) {
         // ConfirmOverlay, not AlertDialog: a Compose dialog is its own window and swallows
         // controller keys, so the old prompt could only be answered by touch.
@@ -393,6 +427,7 @@ private fun SettingsPanel(
 private fun SettingsCategoryBar(
     selected: SettingsCategory,
     gameSpecific: Boolean,
+    onlyGroup: SettingsGroup? = null,
     onSelect: (SettingsCategory) -> Unit,
 ) {
     // Row + horizontalScroll (NOT LazyRow): controllerFocusable registers each tab via a
@@ -405,13 +440,17 @@ private fun SettingsCategoryBar(
         // sense for a specific game, so hide it in the global settings.
         (gameSpecific && it.category == SettingsCategory.General) ||
             (!gameSpecific && it.category == SettingsCategory.Info) ||
-            (gameSpecific && it.category == SettingsCategory.About)
+            (gameSpecific && it.category == SettingsCategory.About) ||
+            // Nexus2: a game's page has Graphics, Emulation, Audio and Controls only; a group
+            // page only its own tabs.
+            (gameSpecific && groupOf(it.category)?.perGame != true) ||
+            (onlyGroup != null && it.category !in onlyGroup.categories)
     }
-    // Nexus2: first the seven groups, then (only when the group holds several) its tabs.
+    // Nexus2: first the groups (skipped on a group page), then (only when the group holds several) its tabs.
     val visible = sections.map { it.category }.toSet()
     val groups = SettingsGroup.entries.filter { g -> g.categories.any { it in visible } }
     val selectedGroup = groupOf(selected)
-    Box(Modifier.fillMaxWidth()) {
+    if (onlyGroup == null) Box(Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier.horizontalScroll(rememberScrollState()).padding(vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -518,14 +557,19 @@ private fun SettingsCategoryBar(
 
 /** Nexus2: the seven sections of Settings. Each holds one or more of the existing tabs, which keep
  *  every option they had; the order here is also the L1/R1 order. */
-internal enum class SettingsGroup(val titleKey: String, val glyph: String, val categories: List<SettingsCategory>) {
-    Appearance("nexus.settings.group.appearance", "◐", listOf(SettingsCategory.General, SettingsCategory.OnScreen, SettingsCategory.Skins)),
-    Performance("nexus.settings.group.performance", "↯", listOf(SettingsCategory.Performance)),
-    Graphics("nexus.settings.group.graphics", "◫", listOf(SettingsCategory.Graphics, SettingsCategory.Patches)),
-    Audio("nexus.settings.group.audio", "♫", listOf(SettingsCategory.Audio)),
-    Controls("nexus.settings.group.controls", "⌁", listOf(SettingsCategory.Controls, SettingsCategory.Hotkeys)),
-    System("nexus.settings.group.system", "ⓘ", listOf(SettingsCategory.Info, SettingsCategory.Network)),
-    Advanced("nexus.settings.group.advanced", "⌘", listOf(SettingsCategory.Advanced)),
+internal enum class SettingsGroup(
+    val titleKey: String,
+    val glyph: String,
+    val categories: List<SettingsCategory>,
+    /** Offered in a game's own settings page. */
+    val perGame: Boolean,
+) {
+    Graphics("nexus.settings.group.graphics", "◫", listOf(SettingsCategory.Graphics, SettingsCategory.Patches), true),
+    Emulation("nexus.settings.group.emulation", "↯", listOf(SettingsCategory.Performance, SettingsCategory.Advanced), true),
+    Audio("nexus.settings.group.audio", "♫", listOf(SettingsCategory.Audio), true),
+    Controls("nexus.settings.group.controls", "⌁", listOf(SettingsCategory.Controls, SettingsCategory.Hotkeys, SettingsCategory.Skins), true),
+    System("nexus.settings.group.system", "ⓘ", listOf(SettingsCategory.General, SettingsCategory.Info, SettingsCategory.Network), false),
+    Diagnostics("nexus.settings.group.diagnostics", "⊕", listOf(SettingsCategory.OnScreen), false),
 }
 
 private val SectionByCategory = mapOf(
@@ -591,4 +635,45 @@ internal fun categoryTitle(category: SettingsCategory): String = when (category)
     SettingsCategory.Advanced -> str("tab.fixes")
     SettingsCategory.Patches -> str("patches.dialog.patchesAndCheats")
     SettingsCategory.About -> str("about.title")
+}
+
+
+/**
+ * Nexus2: header of a game's own settings: cover, name, region, the profile its values match,
+ * which rows are inherited vs. custom, and "restore this game's defaults" (back to Global).
+ */
+@Composable
+private fun NexusGameSettingsHeader(game: com.armsx2.GameInfo, settings: com.armsx2.config.Settings, onResetAll: () -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            com.armsx2.ui.common.GameCoverArt(game, Modifier.size(width = 72.dp, height = 102.dp))
+            Spacer(Modifier.size(14.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    game.displayTitle(com.armsx2.EnglishTitles.enabled.value),
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = colors.onBackground,
+                    maxLines = 2,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.size(6.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    game.region?.let { com.armsx2.ui.nexus.NexusChip(it) }
+                    com.armsx2.ui.nexus.NexusChip(
+                        str(com.armsx2.ui.settings.currentProfileKey(settings)),
+                        colors.primary,
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.size(12.dp))
+        Text(str("nexus.gameSettings.inherit"), fontSize = 13.sp, lineHeight = 18.sp, color = colors.onSurfaceVariant)
+        Spacer(Modifier.size(10.dp))
+        com.armsx2.ui.nexus.NexusSecondaryButton(str("nexus.gameSettings.resetAll"), Modifier.fillMaxWidth(), onClick = onResetAll)
+        Spacer(Modifier.size(4.dp))
+        // The same one-tap profiles as the global page, written to this game only.
+        com.armsx2.ui.settings.QuickProfilesSection(settings) { com.armsx2.ui.InGameOverlay.saveSettings(it) }
+    }
 }

@@ -17,6 +17,9 @@ enum class HomeSort { Title, RecentlyPlayed, Compatibility }
 
 enum class LibraryLayout { Grid, List, Shelf }
 
+/** Nexus2: the chip row above the library. */
+enum class LibraryFilter { All, PS2, Favorites, Recent }
+
 data class HomeUiState(
     val allGames: List<GameInfo> = emptyList(),
     val visibleGames: List<GameInfo> = emptyList(),
@@ -30,6 +33,7 @@ data class HomeUiState(
     val categoryFilter: String? = null,
     /** Nexus2: library narrowed to favourites / to games imported more than once. */
     val favoritesOnly: Boolean = false,
+    val filter: LibraryFilter = LibraryFilter.All,
     val duplicatesOnly: Boolean = false,
     /** Nexus2: how many library entries share a serial with another entry. */
     val duplicateCount: Int = 0,
@@ -172,6 +176,11 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /** Toggle whether hidden games are shown (so they can be un-hidden). */
+    /** Nexus2: the chip row (All / PS2 / Favourites / Recent). */
+    fun setFilter(value: LibraryFilter) {
+        state.value = buildState(state.value.copy(filter = value))
+    }
+
     /** Nexus2: the ⋮ menu's "Favourites only" toggle. */
     fun setFavoritesOnly(value: Boolean) {
         state.value = buildState(state.value.copy(favoritesOnly = value, duplicatesOnly = if (value) false else state.value.duplicatesOnly))
@@ -225,6 +234,12 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         val filtered = base.allGames.filter { game ->
             val query = base.query.trim()
             (!base.favoritesOnly || com.armsx2.Favorites.isFavorite(game)) &&
+            when (base.filter) {
+                LibraryFilter.All -> true
+                LibraryFilter.PS2 -> game.platform == com.armsx2.GamePlatform.PS2 && !com.armsx2.ArcadeOnly.isArcade(game)
+                LibraryFilter.Favorites -> com.armsx2.Favorites.isFavorite(game)
+                LibraryFilter.Recent -> recentOrder.containsKey(game.uri.toString())
+            } &&
             (!base.duplicatesOnly || game.uri.toString() in duplicateKeys) &&
             (members == null || game.settingsKey?.let { it in members } == true) &&
             com.armsx2.ArcadeOnly.shows(game) &&
@@ -242,7 +257,9 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         // sortKey(), not the displayed title: a Japanese title sorts by its kana reading
         // (GameDB name-sort), because sorting the kanji sorts by codepoint — which is the
         // "sort by name-sort" half of issue #338.
-        val sorted = when (base.sort) {
+        val sorted = if (base.filter == LibraryFilter.Recent) {
+            filtered.sortedBy { recentOrder[it.uri.toString()] ?: Int.MAX_VALUE }
+        } else when (base.sort) {
             HomeSort.Title -> filtered.sortedBy { it.sortKey(forceEn).lowercase() }
             HomeSort.RecentlyPlayed -> filtered.sortedWith(
                 compareBy<GameInfo> { recentOrder[it.uri.toString()] ?: Int.MAX_VALUE }

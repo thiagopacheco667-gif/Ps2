@@ -202,7 +202,7 @@ private fun DrawerContent(selected: AppRoute, onNavigate: (AppRoute) -> Unit, on
         DrawerItem("action.launchGame", "📂", onAction = { MainActivityRuntime.promptLaunchGame(); onDismiss() }),
         DrawerItem("ra.title", "🏆", AppRoute.Achievements, iconRes = com.armsx2.R.drawable.ic_trophy,
             iconTint = TrophyGold),
-        DrawerItem("action.settings", "⚙️", AppRoute.Settings()),
+        DrawerItem("action.settings", "⚙️", AppRoute.SettingsHome),
     )
     val managers = listOf(
         // Moved off the library overflow menu, which was its only entry point. Sits first, beside
@@ -373,6 +373,9 @@ private fun sameDestination(current: AppRoute, target: AppRoute): Boolean = when
     AppRoute.Tools -> current is AppRoute.Tools
     is AppRoute.GameDetail -> current is AppRoute.GameDetail
     AppRoute.Diagnostics -> current is AppRoute.Diagnostics
+    AppRoute.Saves -> current is AppRoute.Saves
+    AppRoute.SettingsHome -> current is AppRoute.SettingsHome
+    AppRoute.Profile -> current is AppRoute.Profile
     is AppRoute.Settings -> current is AppRoute.Settings
     is AppRoute.BiosManager -> current is AppRoute.BiosManager
     is AppRoute.MemoryCardManager -> current is AppRoute.MemoryCardManager

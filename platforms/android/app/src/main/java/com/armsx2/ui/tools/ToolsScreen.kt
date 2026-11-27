@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.sp
 import com.armsx2.R
 import com.armsx2.i18n.str
 import com.armsx2.navigation.AppRoute
+import com.armsx2.navigation.SettingsCategory
 import com.armsx2.navigation.UiNavigator
 import com.armsx2.runtime.MainActivityRuntime
 import com.armsx2.ui.common.padFocusRing
@@ -60,27 +61,25 @@ private fun toolGroups(): List<ToolGroup> = listOf(
     ToolGroup("nexus.tools.group.system", listOf(
         ToolEntry("setup.step.bios.title", "nexus.tools.bios.desc", R.drawable.ic_nx_disc) { UiNavigator.openFrom(AppRoute.BiosManager()) },
         ToolEntry("games.overflow.setup", "nexus.tools.folders.desc", R.drawable.ic_nx_folder) { MainActivityRuntime.reopenSetup() },
-    )),
-    ToolGroup("nexus.tools.group.data", listOf(
         ToolEntry("memcard.title", "nexus.tools.memcard.desc", R.drawable.ic_nx_card) { UiNavigator.openFrom(AppRoute.MemoryCardManager()) },
-        ToolEntry("savestate.title.loadManage", "nexus.tools.saves.desc", R.drawable.ic_nx_save) { UiNavigator.openFrom(AppRoute.SaveManager()) },
     )),
     ToolGroup("nexus.tools.group.extras", listOf(
         ToolEntry("ra.title", "nexus.tools.achievements.desc", R.drawable.ic_trophy) { UiNavigator.openFrom(AppRoute.Achievements) },
         ToolEntry("renderer.section.texturePacks", "nexus.tools.textures.desc", R.drawable.ic_nx_texture) { UiNavigator.openFrom(AppRoute.TextureManager) },
         ToolEntry("patches.dialog.patchesAndCheats", "nexus.tools.patches.desc", R.drawable.ic_nx_patch) { UiNavigator.openFrom(AppRoute.PatchManager) },
+        ToolEntry("tab.controls", "nexus.tools.controls.desc", R.drawable.ic_nx_pad) { UiNavigator.openFrom(AppRoute.ControllerManager) },
         ToolEntry("arcade.title", "nexus.tools.arcade.desc", R.drawable.ic_nx_arcade) { UiNavigator.openFrom(AppRoute.Arcade) },
     )),
-    ToolGroup("nexus.tools.group.input", listOf(
-        ToolEntry("tab.controls", "nexus.tools.controls.desc", R.drawable.ic_nx_pad) { UiNavigator.openFrom(AppRoute.ControllerManager) },
-    )),
-    ToolGroup("nexus.tools.group.help", listOf(
-        ToolEntry("bugreport.menu.title", "nexus.tools.diagnostics.desc", R.drawable.ic_nx_pulse) { UiNavigator.openFrom(AppRoute.Diagnostics) },
+    ToolGroup("nexus.tools.group.app", listOf(
+        ToolEntry("nexus.tools.general", "nexus.tools.general.desc", R.drawable.ic_nx_settings) {
+            UiNavigator.openFrom(AppRoute.Settings(SettingsCategory.General, group = "System"))
+        },
+        ToolEntry("about.title", "nexus.tools.about.desc", R.drawable.ic_nx_pulse) { UiNavigator.openFrom(AppRoute.About) },
     )),
 )
 
 @Composable
-fun ToolsScreen(modifier: Modifier = Modifier) {
+fun ToolsScreen(onBack: (() -> Unit)? = null, modifier: Modifier = Modifier) {
     val colors = MaterialTheme.colorScheme
     val context = LocalContext.current
     val groups = toolGroups()
@@ -99,8 +98,12 @@ fun ToolsScreen(modifier: Modifier = Modifier) {
         ) {
             item {
                 Column(Modifier.padding(bottom = 14.dp)) {
+                    if (onBack != null) {
+                        com.armsx2.ui.nexus.NexusIconButton(R.drawable.ic_nx_back, str("nexus.common.back"), onClick = onBack)
+                        Spacer(Modifier.size(12.dp))
+                    }
                     Text(
-                        str("nexus.nav.tools"),
+                        str("nexus.settings.group.system"),
                         style = MaterialTheme.typography.headlineMedium,
                         fontWeight = FontWeight.Bold,
                         color = colors.onBackground,

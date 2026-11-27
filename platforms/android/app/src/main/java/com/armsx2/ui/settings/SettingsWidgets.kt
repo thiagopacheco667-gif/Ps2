@@ -800,6 +800,7 @@ fun ToggleRow(
             Column(modifier = Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(label, color = MaterialTheme.colorScheme.onSurface, fontSize = 18.sp, lineHeight = 23.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f).overrideMarker(tint, 23.sp))
+                    RevertToGlobalButton(field)
                     if (description != null) InfoHint(label, description)
                 }
                 if (description != null) {
@@ -879,6 +880,7 @@ fun IntSliderRow(
                 Column(modifier = Modifier.weight(1f)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(label, color = MaterialTheme.colorScheme.onSurface, fontSize = 18.sp, lineHeight = 23.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f).overrideMarker(tint, 23.sp))
+                        RevertToGlobalButton(field)
                         if (description != null) InfoHint(label, description)
                     }
                     if (description != null) {
@@ -1178,6 +1180,7 @@ fun SegmentedRow(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(label, color = MaterialTheme.colorScheme.onSurface, fontSize = 18.sp, lineHeight = 23.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f).overrideMarker(tint, 23.sp))
+                RevertToGlobalButton(field)
                 if (description != null) InfoHint(label, description)
             }
             if (description != null) {
@@ -1267,6 +1270,7 @@ fun SegmentedGridRow(
         Column {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(label, color = MaterialTheme.colorScheme.onSurface, fontSize = 18.sp, lineHeight = 23.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f).overrideMarker(tint, 23.sp))
+                RevertToGlobalButton(field)
                 if (description != null) InfoHint(label, description)
             }
             if (description != null) {
@@ -1414,3 +1418,34 @@ fun Modifier.verticalScrollbar(
     // Reserve the gutter: this padding is the INNER node, so it insets the
     // scrollable rows (not the bar) and keeps them out from under the indicator.
     .padding(end = gutter)
+
+
+/**
+ * Nexus2: per-game inheritance. Provided by the settings screen in a game's scope: the fields this
+ * game overrides (everything else is inherited from Global) and how to drop one override.
+ */
+internal class GameOverrideScope(val overridden: Set<String>, val revert: (String) -> Unit)
+
+internal val LocalGameOverrideScope = androidx.compose.runtime.staticCompositionLocalOf<GameOverrideScope?> { null }
+
+/** "↺ Global" next to a row's label when this game overrides it; tapping drops the override so
+ *  the row inherits the global value again. Nothing in global scope or for inherited rows. */
+@Composable
+internal fun RevertToGlobalButton(field: String?) {
+    val scope = LocalGameOverrideScope.current ?: return
+    if (field == null || field !in scope.overridden) return
+    val label = com.armsx2.i18n.str("nexus.settings.revertGlobal")
+    androidx.compose.material3.Text(
+        "↺ " + label,
+        color = MaterialTheme.colorScheme.primary,
+        fontSize = 13.sp,
+        fontWeight = FontWeight.SemiBold,
+        maxLines = 1,
+        modifier = Modifier
+            .padding(start = 6.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f))
+            .clickable { scope.revert(field) }
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+    )
+}

@@ -99,6 +99,43 @@ fun DiagnosticsScreen(onBack: () -> Unit) {
             delay(3_000)
         }
     }
+    // Nexus2: live figures from the core while a game is open (all read 0 with no VM, so the block
+    // is hidden then rather than showing zeros).
+    var live by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            live = runCatching {
+                val running = MainActivityRuntime.eState.value != com.armsx2.EmuState.STOPPED &&
+                    kr.co.iefriends.pcsx2.NativeApp.hasActiveVM()
+                if (!running) emptyList() else {
+                    val fps = kr.co.iefriends.pcsx2.NativeApp.getFPS()
+                    val vps = kr.co.iefriends.pcsx2.NativeApp.getVPS()
+                    val speed = kr.co.iefriends.pcsx2.NativeApp.getEmuSpeedPercent()
+                    val frameMs = kr.co.iefriends.pcsx2.NativeApp.getAverageFrameTime()
+                    val gpu = kr.co.iefriends.pcsx2.NativeApp.getGpuUsage()
+                    val s = com.armsx2.ui.InGameOverlay.settingsState.value
+                    val mi = android.app.ActivityManager.MemoryInfo().also {
+                        (context.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager).getMemoryInfo(it)
+                    }
+                    listOf(
+                        I18n.get("nexus.diag.fps") to "%.0f".format(fps),
+                        I18n.get("nexus.diag.vps") to "%.0f".format(vps),
+                        I18n.get("nexus.diag.speed") to "%.0f%%".format(speed),
+                        I18n.get("nexus.diag.frametime") to "%.1f ms".format(frameMs),
+                        I18n.get("nexus.diag.gpuUsage") to "%.0f%%".format(gpu),
+                        I18n.get("nexus.diag.backend") to s.output.renderer.replaceFirstChar { it.uppercase() },
+                        I18n.get("nexus.diag.resolution") to "%sx".format(
+                            MainActivityRuntime.upscale.value.toString().removeSuffix(".0"),
+                        ),
+                        I18n.get("nexus.diag.memory") to "%.1f / %.1f GB".format(
+                            (mi.totalMem - mi.availMem) / 1_073_741_824f, mi.totalMem / 1_073_741_824f,
+                        ),
+                    )
+                }
+            }.getOrDefault(emptyList())
+            delay(1_000)
+        }
+    }
     val firstFocus = rememberInitialFocusRequester()
 
     Box(Modifier.fillMaxSize().background(colors.background), contentAlignment = Alignment.TopCenter) {
@@ -115,7 +152,7 @@ fun DiagnosticsScreen(onBack: () -> Unit) {
                     Icon(painterResource(R.drawable.ic_nx_back), contentDescription = str("nexus.common.back"), tint = colors.onSurface)
                 }
                 Spacer(Modifier.size(14.dp))
-                Text(str("bugreport.menu.title"), fontSize = 24.sp, fontWeight = FontWeight.Bold, color = colors.onBackground)
+                Text(str("nexus.settings.group.diagnostics"), fontSize = 24.sp, fontWeight = FontWeight.Bold, color = colors.onBackground)
             }
             Text(str("nexus.diag.intro"), fontSize = 14.sp, lineHeight = 20.sp, color = colors.onSurfaceVariant)
 
@@ -130,6 +167,15 @@ fun DiagnosticsScreen(onBack: () -> Unit) {
                 copyToClipboard(context, (device + app + temps).joinToString("\n") { "${it.first}: ${it.second}" })
             }
 
+            Spacer(Modifier.height(10.dp))
+            ActionRow(str("nexus.diag.osd"), str("nexus.diag.osd.desc")) {
+                com.armsx2.navigation.UiNavigator.openFrom(
+                    com.armsx2.navigation.AppRoute.Settings(com.armsx2.navigation.SettingsCategory.OnScreen, group = "Diagnostics"),
+                )
+            }
+            if (live.isNotEmpty()) Group("nexus.diag.live", live)
+            else Text(str("nexus.diag.live.none"), fontSize = 13.sp, lineHeight = 18.sp,
+                color = colors.onSurfaceVariant, modifier = Modifier.padding(top = 20.dp))
             Group("nexus.diag.device", device + temps)
             Group("nexus.diag.app", app)
         }

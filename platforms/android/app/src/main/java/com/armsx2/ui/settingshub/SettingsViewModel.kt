@@ -88,6 +88,42 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         // game layer from it on every commit/boot so the stale keys keep winning — which is why
         // Reset "did nothing". Rewriting that INI clears the tab's keys while preserving the
         // [Patches]/[Cheats] enable lists.
+        syncAfterOverrideChange(serial)
+        if (MainActivityRuntime.nativeReady.value && MainActivityRuntime.eState.value != EmuState.STOPPED &&
+            category == SettingsCategory.Performance) MainActivityRuntime.surface.value?.applyOutputScale()
+    }
+
+    /** Nexus2: the fields the game on screen overrides; empty in global scope. */
+    fun overriddenFields(): Set<String> {
+        val serial = uiState.value.game?.settingsKey ?: return emptySet()
+        return ConfigStore.loadOverrides(serial)?.keys()?.asSequence()?.toSet().orEmpty()
+    }
+
+    /** Nexus2: drop this game's override of [field] so it inherits the global value again. */
+    fun revertFieldToGlobal(field: String) {
+        val serial = uiState.value.game?.settingsKey ?: return
+        val overrides = ConfigStore.loadOverrides(serial) ?: return
+        if (!overrides.has(field)) return
+        val pruned = pruneOverrides(overrides, listOf(field))
+        if (pruned == null) ConfigStore.clearOverrides(serial) else ConfigStore.saveOverrides(serial, pruned)
+        settings.value = ConfigStore.resolveForDisplay(serial)
+        syncAfterOverrideChange(serial)
+    }
+
+    /** Nexus2: every setting of this game back to Global (patch and cheat lists are kept, as the
+     *  per-tab reset does). */
+    fun resetWholeGame() {
+        val serial = uiState.value.game?.settingsKey ?: return
+        ConfigStore.loadOverrides(serial)?.let { overrides ->
+            val keys = SettingsCategory.entries.flatMap { categoryOverrideKeys(it) }
+            val pruned = pruneOverrides(overrides, keys)
+            if (pruned == null) ConfigStore.clearOverrides(serial) else ConfigStore.saveOverrides(serial, pruned)
+        }
+        settings.value = ConfigStore.resolveForDisplay(serial)
+        syncAfterOverrideChange(serial)
+    }
+
+    private fun syncAfterOverrideChange(serial: String?) {
         val running = MainActivityRuntime.nativeReady.value &&
             MainActivityRuntime.eState.value != EmuState.STOPPED
         val gameSerial = serial?.takeIf { it.isNotBlank() }
@@ -112,6 +148,5 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                 running -> settings.value.applyTo()
             }
         }
-        if (running && category == SettingsCategory.Performance) MainActivityRuntime.surface.value?.applyOutputScale()
     }
 }

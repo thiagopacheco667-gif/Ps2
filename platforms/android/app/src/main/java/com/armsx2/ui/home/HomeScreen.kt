@@ -18,6 +18,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
+import com.armsx2.ui.common.padFocusRing
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
@@ -635,6 +637,18 @@ fun HomeScreen(
                             placeholder = searchPlaceholder,
                             modifier = Modifier.fillMaxWidth(),
                             selected = HomeInputController.zone.value == HomeZone.Search && com.armsx2.ui.common.PadInput.active.value,
+                        )
+                    }
+                }
+
+                // Nexus2: filter chips (All / PS2 / Favourites / Recent) and the count line.
+                if (state.initialized) {
+                    item(span = { GridItemSpan(maxLineSpan) }, key = "nexus-filters") {
+                        LibraryFilterRow(
+                            selected = state.filter,
+                            count = state.visibleGames.size,
+                            sortLabel = str(if (state.sort == HomeSort.RecentlyPlayed) "games.overflow.sortRecent" else "games.overflow.sortTitle"),
+                            onSelect = viewModel::setFilter,
                         )
                     }
                 }
@@ -2756,3 +2770,45 @@ private fun ShelfGameCard(game: GameInfo, width: Dp, reflectionHeight: Dp, selec
     }
 }
 
+
+
+/** Nexus2: one row of filter chips and "N games · Sorted by …" under the search field. */
+@Composable
+private fun LibraryFilterRow(selected: LibraryFilter, count: Int, sortLabel: String, onSelect: (LibraryFilter) -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    val options = listOf(
+        LibraryFilter.All to "nexus.lib.all",
+        LibraryFilter.PS2 to "nexus.lib.ps2",
+        LibraryFilter.Favorites to "nexus.lib.favorites",
+        LibraryFilter.Recent to "nexus.lib.recent",
+    )
+    Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            options.forEach { (filter, key) ->
+                val active = filter == selected
+                val shape = RoundedCornerShape(20.dp)
+                Text(
+                    str(key),
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (active) colors.onPrimary else colors.onSurface,
+                    modifier = Modifier
+                        .padFocusRing(shape)
+                        .clip(shape)
+                        .background(if (active) colors.primary else colors.surface)
+                        .clickable { onSelect(filter) }
+                        .padding(horizontal = 18.dp, vertical = 10.dp),
+                )
+            }
+        }
+        Text(
+            str("nexus.lib.count").replace("{n}", count.toString()).replace("{sort}", sortLabel),
+            fontSize = 13.sp,
+            color = colors.onSurfaceVariant,
+            modifier = Modifier.padding(top = 10.dp, start = 2.dp),
+        )
+    }
+}
