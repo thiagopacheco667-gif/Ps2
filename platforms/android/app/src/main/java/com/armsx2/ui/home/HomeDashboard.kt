@@ -106,6 +106,9 @@ fun HomeDashboard(viewModel: HomeViewModel = viewModel()) {
                 RecentRow(moreRecents.take(10), forceEn)
             }
 
+            // Nexus2: RetroAchievements account, progress per game and the latest unlocks.
+            if (state.initialized) HomeAchievementsSection(shown, forceEn)
+
             NexusSectionHeader(str("nexus.home.system"))
             SystemStatus(state, shown.size)
 

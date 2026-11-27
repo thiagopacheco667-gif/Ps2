@@ -161,6 +161,21 @@ fun str(key: String): String {
  */
 private val BASE_EN: Map<String, String> = mapOf(
     // --- Nexus2 ---
+    "nexus.ach.title" to "Achievements",
+    "nexus.ach.seeAll" to "See all",
+    "nexus.ach.signIn" to "Sign in to RetroAchievements",
+    "nexus.ach.signIn.desc" to "Earn achievements in your PS2 games and track them here.",
+    "nexus.ach.unlocked" to "Unlocked",
+    "nexus.ach.games" to "Games",
+    "nexus.ach.mastered" to "Completed",
+    "nexus.ach.noProgress" to "Play a game with achievements and its progress shows up here.",
+    "nexus.ach.recent" to "Recently unlocked",
+    "nexus.ach.recentKey" to "Show recent unlocks",
+    "nexus.ach.recentKey.desc" to "Add your RetroAchievements Web API key in Achievements.",
+    "nexus.ach.points" to "{n} pts",
+    "nexus.ach.softPoints" to "{n} softcore",
+    "nexus.ach.pointsShort" to "{n} pts",
+    "nexus.ach.hardcoreCount" to "{n} hardcore",
     "nexus.ingame.general" to "General",
     "nexus.ingame.video" to "Video",
     "nexus.ingame.emulation" to "Emulation",

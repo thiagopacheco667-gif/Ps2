@@ -248,6 +248,56 @@ object RaLibrary {
 
     // ---- http -------------------------------------------------------------------------------
 
+    /** Nexus2: one RetroAchievements unlock, as API_GetUserRecentAchievements reports it. */
+    data class RecentUnlock(
+        val title: String,
+        val description: String,
+        val points: Int,
+        val hardcore: Boolean,
+        val gameTitle: String,
+        val gameId: Int,
+        val badgeUrl: String,
+        /** Server time, "yyyy-MM-dd HH:mm:ss" (UTC). */
+        val date: String,
+    )
+
+    @Volatile private var recentCache: Pair<Long, List<RecentUnlock>>? = null
+    private const val RECENT_TTL_MS = 10L * 60 * 1000
+
+    /**
+     * Nexus2: the account's PlayStation 2 unlocks from the last [days] days, newest first. Needs the
+     * Web API key the library sync already uses; null when it is not set or the request fails, so
+     * the Home section simply leaves the row out. Blocking: call off the main thread. Cached for
+     * ten minutes so scrolling Home does not hit RetroAchievements again.
+     */
+    fun recentUnlocks(days: Int = 30, force: Boolean = false): List<RecentUnlock>? {
+        if (!configured()) return null
+        val now = System.currentTimeMillis()
+        recentCache?.let { (at, list) -> if (!force && now - at < RECENT_TTL_MS) return list }
+        val body = get("$API/API_GetUserRecentAchievements.php?u=${enc(userName)}&y=${enc(webApiKey)}&m=${days * 24 * 60}")
+            ?: return recentCache?.second
+        val list = runCatching {
+            val arr = org.json.JSONArray(body)
+            (0 until arr.length()).mapNotNull { i ->
+                val o = arr.optJSONObject(i) ?: return@mapNotNull null
+                if (o.optString("ConsoleName") != "PlayStation 2") return@mapNotNull null
+                val badge = o.optString("BadgeURL").ifBlank { "/Badge/" + o.optString("BadgeName") + ".png" }
+                RecentUnlock(
+                    title = o.optString("Title"),
+                    description = o.optString("Description"),
+                    points = o.optInt("Points"),
+                    hardcore = o.optInt("HardcoreMode") == 1,
+                    gameTitle = o.optString("GameTitle"),
+                    gameId = o.optInt("GameID"),
+                    badgeUrl = "https://media.retroachievements.org$badge",
+                    date = o.optString("Date"),
+                )
+            }.sortedByDescending { it.date }
+        }.getOrNull() ?: return recentCache?.second
+        recentCache = now to list
+        return list
+    }
+
     private fun enc(s: String): String =
         java.net.URLEncoder.encode(s, "UTF-8")
 
