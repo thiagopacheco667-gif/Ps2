@@ -18,7 +18,7 @@ import java.io.RandomAccessFile
  * the button, sees "Saved screenshot to …" and then cannot find the file anywhere.
  */
 object Screenshots {
-    private const val ALBUM = "ARMSX2"
+    private const val ALBUM = "Nexus2"
 
     /** Fire-and-forget: queues the capture on the GS thread, then publishes it once it lands. */
     fun capture(context: Context) {

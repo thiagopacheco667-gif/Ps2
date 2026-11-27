@@ -57,6 +57,8 @@ object DriverUpdateOffer {
         newest != null && newest.id != globalId
 
     /** Records that this version needs no more asking. */
+    private const val KEY_NEXUS_AUTO_CHECK = "nexus.network.driverOffer"
+
     fun settle() {
         MainActivityRuntime.prefs.edit().putInt(KEY_SETTLED_VERSION, BuildConfig.VERSION_CODE).apply()
     }
@@ -65,6 +67,9 @@ object DriverUpdateOffer {
     fun lookOnce(context: Context) {
         if (looked) return
         looked = true
+        // Nexus2: no automatic network check for driver releases unless the player opts in
+        // (pref "nexus.network.driverOffer"). Drivers can still be downloaded from the Renderer page.
+        if (!MainActivityRuntime.prefs.getBoolean(KEY_NEXUS_AUTO_CHECK, false)) return
         if (!due(MainActivityRuntime.prefs.getInt(KEY_SETTLED_VERSION, 0), BuildConfig.VERSION_CODE)) return
         val app = context.applicationContext
         scope.launch {

@@ -64,8 +64,8 @@ import java.net.URL
  * it is compared directly against the nightly-YYYYMMDD tag — no epoch arithmetic.
  */
 
-private const val LATEST_URL = "https://api.github.com/repos/ARMSX2/ARMSX2/releases/latest"
-private const val RELEASES_URL = "https://api.github.com/repos/ARMSX2/ARMSX2/releases?per_page=20"
+private const val LATEST_URL = "https://api.github.com/repos/thiagopacheco667-gif/Ps2/releases/latest"
+private const val RELEASES_URL = "https://api.github.com/repos/thiagopacheco667-gif/Ps2/releases?per_page=20"
 
 /** True for a nightly package: it always follows the nightly channel, toggle or not. */
 private val IS_NIGHTLY: Boolean = BuildConfig.CHANNEL == "nightly"

@@ -102,6 +102,11 @@ fun RendererTab(state: MutableState<Settings>) {
         modifier = Modifier
             .fillMaxWidth(),
     ) {
+        // Nexus2: one-tap graphics profiles and the no-blur switches (QuickProfiles.kt).
+        CollapsibleSection(str("nexus.section.quick"), initiallyExpanded = true) {
+            QuickProfilesSection(s) { apply(it) }
+        }
+        SettingsDivider()
         CollapsibleSection(str("renderer.section.displayResolution"), initiallyExpanded = true) {
             // Graphics API (OpenGL / Vulkan) + Vulkan custom-driver picker.
             // from the removed first-run setup renderer page into settings.

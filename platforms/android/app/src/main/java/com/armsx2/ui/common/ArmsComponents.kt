@@ -116,17 +116,16 @@ fun ArmsBackdrop(
 @Composable
 fun ArmsLogo(modifier: Modifier = Modifier, showWordmark: Boolean = true, iconSize: Dp = 42.dp) {
     Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
-        // The ARMSX2 tower mark (bagas's logo), circle-cropped so its dark square
-        // corners don't show — matches the round hero render.
+        // Nexus2 mark (same artwork as the launcher icon), circle-cropped.
         Image(
-            painter = painterResource(id = R.drawable.savetowerforeground),
-            contentDescription = "ARMSX2",
+            painter = painterResource(id = R.drawable.nexus_logo),
+            contentDescription = "Nexus2",
             modifier = Modifier.size(iconSize).clip(CircleShape),
         )
         if (showWordmark) {
             Spacer(Modifier.width(12.dp))
             Text(
-                text = "ARMSX2",
+                text = "Nexus2",
                 color = MaterialTheme.colorScheme.onSurface,
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Black,
