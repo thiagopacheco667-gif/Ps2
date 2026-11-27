@@ -1,0 +1,56 @@
+# Nexus2: publish an already-built APK as a GitHub Release, so it has a direct, resumable,
+# no-login download link: https://github.com/<owner>/<repo>/releases/latest/download/Nexus2.apk
+#
+# - Automatically after every successful "Android APK" build of main.
+# - By hand (Actions > Release APK > Run workflow) for any earlier build, by its run id.
+name: Release APK
+
+on:
+  workflow_run:
+    workflows: ["Android APK"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Run id of the Android APK build to publish"
+        required: true
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  release:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      RUN_ID: ${{ inputs.run_id || github.event.workflow_run.id }}
+    steps:
+      - name: Download the build's APK
+        uses: actions/download-artifact@v4
+        with:
+          name: nexus2-android-arm64
+          run-id: ${{ env.RUN_ID }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: apk
+
+      - name: Publish release
+        run: |
+          set -euo pipefail
+          ls -R apk
+          apk="$(find apk -name '*.apk' -path '*github*' -path '*elease*' | head -n1)"
+          [ -n "$apk" ] || apk="$(find apk -name '*.apk' | head -n1)"
+          [ -n "$apk" ] || { echo "no APK in artifact"; exit 1; }
+          cp "$apk" Nexus2.apk
+          read -r sha branch < <(gh api "repos/$GH_REPO/actions/runs/$RUN_ID" \
+            --jq '.head_sha + " " + .head_branch')
+          tag="nexus2-build-$RUN_ID"
+          gh release create "$tag" Nexus2.apk \
+            --target "$sha" \
+            --title "Nexus2 — build $RUN_ID" \
+            --notes "APK da branch \`$branch\` (commit ${sha:0:7}). Baixe **Nexus2.apk** abaixo. Instala por cima da versão anterior (mesmo pacote com.nexus2)." \
+            --latest
+          echo "Download: https://github.com/$GH_REPO/releases/latest/download/Nexus2.apk"
