@@ -17,13 +17,15 @@ baseado no [PCSX2](https://pcsx2.net). Importado sem modificações do commit `4
 | 8 | `applicationId` = `com.nexus2`; o namespace Kotlin `com.armsx2` fica. | Instala ao lado do ARMSX2 sem renomear centenas de arquivos. O manifest já usa `${applicationId}`. |
 | 9 | Intro em vídeo do ARMSX2 desligada por padrão (pode ser ligada nas configurações). | É marca do ARMSX2. |
 | 10 | Textos sobre o driver MaliSX2/Turnip e o envio de bug reports continuam dizendo "ARMSX2". | São serviços do ARMSX2; dizer "Nexus2" seria falso. |
+| 11 | Remoção de motion blur via patches que já vêm no `patches.zip` (≈190 jogos), ligados por jogo depois do boot (`BlurRemoval.kt`). | Antes do boot, `setEnabledPatches` cairia na camada base e ligaria o patch por nome em todos os jogos. Patches de "uma vez no carregamento" valem a partir do 2º boot. |
+| 12 | Perfis rápidos só preenchem opções que já existem (`QuickProfiles.kt`). | Nada novo no núcleo; tudo continua ajustável à mão. |
 | 7 | Agendamento diário do `nightly.yml` do upstream desativado. | Ele publica nightlies do ARMSX2 e gastaria minutos do Actions. |
 
 ## Etapas
 
-1. [ ] Compilar o APK original sem alterações (em andamento).
-2. [~] Rebrand (branch `nexus2-rebrand`): nome, applicationId, ícone, paleta, splash, Sobre/licenças.
-3. [ ] Polimento da interface.
-4. [ ] Perfil Dimensity 8400 / Mali-G720.
-5. [ ] Recursos de rede desligados por padrão.
+1. [x] Compilar o APK original sem alterações.
+2. [x] Rebrand (PR #2): nome, applicationId, ícone, paleta, splash, Sobre/licenças.
+3. [~] Polimento: logo no app, traduções com o nome Nexus2, perfis rápidos, remoção de blur (PR #3).
+4. [~] Perfil "Equilíbrio" (2x, blending Basic) como recomendado para Dimensity 8400 / Mali-G720.
+5. [~] Rede: atualizador e notícias apontam para este repositório; checagem automática de driver é opt-in. Discord, RetroAchievements e "checar atualização ao abrir" já eram opt-in. Capas continuam baixando do GitHub (xlenore).
 6. [ ] Testes no Poco X7 Pro.

@@ -679,6 +679,7 @@ open class MainActivityRuntime : ComponentActivity() {
             // Never leave the device pinned once the game is gone (#425).
             com.armsx2.ui.ScreenPinning.stop()
             stopAutoProgressiveScanHold()
+            com.armsx2.BlurRemoval.stop()
             // Drop pressure-modifier bookkeeping: a button still held when the game exits would
             // otherwise stay in the set and be re-emitted into the NEXT session.
             com.armsx2.ui.touch.TouchControls.clearHeldPressureKeys()
@@ -862,6 +863,9 @@ open class MainActivityRuntime : ComponentActivity() {
                     val arcadeLaunch = com.armsx2.arcade.Arcade.isArcadeLaunch(m_szGamefile, currentGame.value)
                     if (bootCfg.output.autoProgressiveScan && !arcadeLaunch)
                         startAutoProgressiveScanHold()
+                    // Nexus2: arm the bundled blur-removal patches once the game's ELF is up.
+                    if (!arcadeLaunch)
+                        instance?.applicationContext?.let { com.armsx2.BlurRemoval.watch(auxScope, it) }
                     // Bank a copy of the cards this boot will mount, while they are still closed.
                     // Cheap and silent: it only writes when the card verifies AND its contents
                     // differ from the newest copy, so relaunching without saving costs nothing.

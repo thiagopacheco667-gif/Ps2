@@ -160,6 +160,20 @@ fun str(key: String): String {
  * renaming a key orphans it in every translation JSON.
  */
 private val BASE_EN: Map<String, String> = mapOf(
+    // --- Nexus2 ---
+    "nexus.section.quick" to "Quick profiles",
+    "nexus.profile.label" to "Graphics profile",
+    "nexus.profile.description" to "Sets resolution, blending accuracy, anisotropic filtering and MTVU in one tap. Balanced is recommended for the Poco X7 Pro (Mali-G720). Each value can still be changed below.",
+    "nexus.profile.battery" to "Battery",
+    "nexus.profile.performance" to "Performance",
+    "nexus.profile.balanced" to "Balanced",
+    "nexus.profile.quality" to "Quality",
+    "nexus.noBlur.label" to "Sharp image (no blur)",
+    "nexus.noBlur.description" to "Turns on anti-blur and no-interlacing patches, removes the interlace offset, uses adaptive deinterlacing instead of blending and the sharp display filter. Turning it off puts these back to their defaults.",
+    "nexus.blurPatches.label" to "Remove motion blur from games",
+    "nexus.blurPatches.description" to "Turns on the bundled blur-removal patch for each game that has one (about 190 games) the first time it starts. You can switch a game's patch off again in the Patch Manager.",
+    "nexus.blur.toast.now" to "Motion blur removed for this game.",
+    "nexus.blur.toast.nextBoot" to "Motion blur removal is on for this game. Part of it takes effect the next time you start the game.",
     "about.title" to "About app",
     "friends.title" to "Friends",
     "friends.explain" to "Link Discord to show what you're playing and see which friends are in Nexus2. Uses your existing Discord friends. Nexus2 keeps no account and runs no server. Only while the app is open.",
