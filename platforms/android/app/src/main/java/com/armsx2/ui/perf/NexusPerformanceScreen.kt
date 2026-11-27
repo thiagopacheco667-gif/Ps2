@@ -97,7 +97,7 @@ fun NexusPerformanceScreen(onBack: () -> Unit) {
                     str("bench.sys.gpu") to (i?.gpu ?: na),
                     "OpenGL ES" to (i?.glVersion ?: na),
                     str("bench.sys.driver") to (i?.driver?.let { if (it == "system") str("bench.sys.driver.system") else it } ?: na),
-                    str("bench.sys.backend") to settings.graphics.renderer.replaceFirstChar { it.uppercase() },
+                    str("bench.sys.backend") to settings.output.renderer.replaceFirstChar { it.uppercase() },
                     str("bench.sys.profile") to str(com.armsx2.ui.settings.currentProfileKey(settings)),
                     "Android" to (i?.android ?: na),
                 ),

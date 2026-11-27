@@ -231,7 +231,7 @@ object NexusBenchmark {
                 runCatching { stateFile.delete() }
             }
         }
-        store(Result(System.currentTimeMillis(), kind, game.title, serial, original.graphics.renderer, com.armsx2.GpuInfo.rendererName().orEmpty(), runs, verdict(kind, runs, configs.map { it.third })))
+        store(Result(System.currentTimeMillis(), kind, game.title, serial, original.output.renderer, com.armsx2.GpuInfo.rendererName().orEmpty(), runs, verdict(kind, runs, configs.map { it.third })))
     }
 
     /** The core refuses a save while the memory card is mid-write; try for a few seconds. */
@@ -386,7 +386,7 @@ object NexusBenchmark {
     private fun describe(s: Settings): String {
         val blend = listOf("Minimum", "Basic", "Medium", "High", "Full", "Maximum").getOrElse(s.graphics.accurateBlendingUnit) { s.graphics.accurateBlendingUnit.toString() }
         val scale = if (s.output.upscaleFloat % 1f == 0f) "${s.output.upscaleFloat.toInt()}x" else "${s.output.upscaleFloat}x"
-        return "${s.graphics.renderer} · $scale · blend $blend · MTVU ${if (s.cpu.mtvu) "on" else "off"}"
+        return "${s.output.renderer} · $scale · blend $blend · MTVU ${if (s.cpu.mtvu) "on" else "off"}"
     }
 
     private fun List<Float>.avgOrNull(): Float? = if (isEmpty()) null else (sumOf { it.toDouble() } / size).toFloat()
