@@ -78,6 +78,8 @@ fun HomeDashboard(viewModel: HomeViewModel = viewModel()) {
     val nativeReady = MainActivityRuntime.nativeReady.value
     // Same trigger as the library, so opening the app on Home still scans the game folders.
     LaunchedEffect(directories, nativeReady) { viewModel.load(directories, nativeReady) }
+    // Nexus2: if the app died during "Analisar desempenho", put the game's own settings back.
+    LaunchedEffect(Unit) { com.armsx2.perf.NexusBenchmark.recoverIfInterrupted() }
 
     val colors = MaterialTheme.colorScheme
     val forceEn = EnglishTitles.enabled.value

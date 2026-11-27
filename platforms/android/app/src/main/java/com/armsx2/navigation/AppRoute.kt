@@ -13,6 +13,8 @@ sealed interface AppRoute {
     data class GameDetail(val game: GameInfo) : AppRoute
     // Nexus2: Tools sub-pages.
     data object Diagnostics : AppRoute
+    /** Nexus2: system state, live counters and "Analisar desempenho" results. */
+    data object NexusPerformance : AppRoute
     data class Settings(
         val category: SettingsCategory = SettingsCategory.General,
         val game: GameInfo? = null,

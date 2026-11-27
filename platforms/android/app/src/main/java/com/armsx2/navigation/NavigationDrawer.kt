@@ -373,6 +373,7 @@ private fun sameDestination(current: AppRoute, target: AppRoute): Boolean = when
     AppRoute.Tools -> current is AppRoute.Tools
     is AppRoute.GameDetail -> current is AppRoute.GameDetail
     AppRoute.Diagnostics -> current is AppRoute.Diagnostics
+    AppRoute.NexusPerformance -> current is AppRoute.NexusPerformance
     AppRoute.Saves -> current is AppRoute.Saves
     AppRoute.SettingsHome -> current is AppRoute.SettingsHome
     AppRoute.Profile -> current is AppRoute.Profile
