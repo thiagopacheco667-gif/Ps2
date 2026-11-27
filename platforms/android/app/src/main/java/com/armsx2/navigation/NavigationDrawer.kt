@@ -193,7 +193,7 @@ private fun DrawerContent(selected: AppRoute, onNavigate: (AppRoute) -> Unit, on
     // Intuitive glyphs that read as what they do — matching the in-game overlay's emoji-icon style
     // (the old box-drawing characters like ▦ ◉ ⌁ ✦ were unclear per tester feedback).
     val primary = listOf(
-        DrawerItem("games.section.library", "🎮", AppRoute.Home),
+        DrawerItem("games.section.library", "🎮", AppRoute.Library),
         // Boot straight into the PS2 system BIOS with no disc — distinct from "BIOS Location"
         // below, which only points the emulator at your BIOS file.
         DrawerItem("bios.boot.title", "▶️", onAction = { MainActivityRuntime.startBios(); onDismiss() }),

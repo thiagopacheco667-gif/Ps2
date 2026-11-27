@@ -2754,6 +2754,7 @@ open class MainActivityRuntime : ComponentActivity() {
         com.armsx2.EnglishTitles.load()
         com.armsx2.CustomNames.load()
         com.armsx2.HiddenGames.load()
+        com.armsx2.Favorites.load()
         com.armsx2.ArcadeOnly.load()
         com.armsx2.LibraryTitles.load()
         com.armsx2.LibraryRecentShelf.load()
@@ -3696,12 +3697,23 @@ open class MainActivityRuntime : ComponentActivity() {
                 return true
             }
             // Nexus2: outside the settings tabs, L1/R1 switch bottom-bar sections — but only with
-            // the library in front (no game, or the library opened over one), never in game.
+            // the library in front (no game, or the library opened over one), never in game, and
+            // not on the Games cover grid, where L1/R1 already cycle sort and layout.
             val cycleSection = com.armsx2.navigation.MainTabsNav.cycle
-            val libraryInFront = eState.value == EmuState.STOPPED || WindowImpl.showLibrary.value
-            if (cycleSection != null && libraryInFront && !WindowImpl.overlayVisible.value) {
+            if (cycleSection != null && nexusSectionKeysActive() &&
+                !com.armsx2.ui.home.HomeInputController.active()
+            ) {
                 if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0)
                     cycleSection(if (kc == KeyEvent.KEYCODE_BUTTON_L1) -1 else 1)
+                return true
+            }
+        }
+        // Nexus2: SELECT steps to the next bar section on every top-level screen, the Games grid
+        // included (it has no other use there).
+        if (kc == KeyEvent.KEYCODE_BUTTON_SELECT) {
+            val cycleSection = com.armsx2.navigation.MainTabsNav.cycle
+            if (cycleSection != null && nexusSectionKeysActive()) {
+                if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) cycleSection(1)
                 return true
             }
         }
@@ -5231,6 +5243,13 @@ open class MainActivityRuntime : ComponentActivity() {
     // the topmost layer: modal dialog > nav drawer > in-game manager screen >
     // library sub-route (Settings/Bios/... reached inside the in-game library) >
     // the library overlay itself > a root sub-route > (root Home) open the drawer.
+    /** Nexus2: the library frontend (not a game, the pause overlay or a modal) has the pad. */
+    private fun nexusSectionKeysActive(): Boolean =
+        (eState.value == EmuState.STOPPED || WindowImpl.showLibrary.value) &&
+            !WindowImpl.overlayVisible.value &&
+            WindowImpl.inGameScreen.value == null &&
+            !com.armsx2.navigation.UiNavigator.drawerOpen.value
+
     private fun handleFrontendBack() {
         com.armsx2.MenuSfx.play(com.armsx2.MenuSfx.Event.BACK)
         val nav = com.armsx2.navigation.UiNavigator
