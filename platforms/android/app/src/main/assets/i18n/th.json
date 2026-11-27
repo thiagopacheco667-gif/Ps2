@@ -351,7 +351,7 @@
  "app.clearCache.done": "ล้างข้อมูลแคช %s แล้ว",
  "app.clearCache.doneSmall": "ล้างข้อมูลแคชแล้ว",
  "app.clearCache.empty": "แคชว่างอยู่แล้ว",
- "app.credits.music": "เพลง: \"Calm Ambient 1 (Synthwave 4k)\" โดย The Cynic Project / cynicmusic.com / pixelsphere.org (CC0)",
+ "app.credits.music": "Music: \"Nexus Ambient\", made for Nexus2 (CC0). UI sounds: original Nexus2 sounds (CC0).",
  "app.credits.museumMusic": "เพลงในพิพิธภัณฑ์ไอคอน: \"Another August\" โดย The Cynic Project / cynicmusic.com / pixelsphere.org",
  "app.credits.sfx": "เสียงเมนู: \"Interface SFX Pack 1\" จาก obsydianx.itch.io (CC0)",
  "app.keyboard.systemIme": "ใช้คีย์บอร์ดของระบบ",

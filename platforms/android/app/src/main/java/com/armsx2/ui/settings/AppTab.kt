@@ -238,6 +238,13 @@ fun AppTab() {
             // Opt into the lightweight 2D animated backdrop everywhere (the same one older Mali /
             // GL-fail devices already get) instead of the GLES3 XMB wave. The colour options below
             // apply to it too. No effect if a custom background image is set.
+            // Nexus2: the particle backdrop (default). Off brings back the XMB wave options below.
+            ToggleRow(
+                label = str("nexus.bg.particles"),
+                value = com.armsx2.ui.home.LibraryBackground.particles.value,
+                description = str("nexus.bg.particles.desc"),
+                onChange = { com.armsx2.ui.home.LibraryBackground.setParticles(it) },
+            )
             ToggleRow(
                 label = str("app.bg.simple"),
                 value = com.armsx2.ui.home.LibraryBackground.animated2D.value,

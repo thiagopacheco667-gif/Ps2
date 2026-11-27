@@ -214,7 +214,7 @@
   "app.clearCache.done": "Очищено кешу: %s.",
   "app.clearCache.doneSmall": "Кеш очищено.",
   "app.clearCache.empty": "Кеш уже порожній.",
-  "app.credits.music": "Музика: «Calm Ambient 1 (Synthwave 4k)», автор The Cynic Project / cynicmusic.com / pixelsphere.org (CC0)",
+  "app.credits.music": "Music: \"Nexus Ambient\", made for Nexus2 (CC0). UI sounds: original Nexus2 sounds (CC0).",
   "app.credits.museumMusic": "Музика в Музеї значків: «Another August», The Cynic Project / cynicmusic.com / pixelsphere.org",
   "app.credits.sfx": "Звуки меню: «Interface SFX Pack 1» з obsydianx.itch.io (CC0)",
   "app.keyboard.systemIme": "Системна клавіатура",

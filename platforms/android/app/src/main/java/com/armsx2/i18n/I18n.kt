@@ -161,6 +161,8 @@ fun str(key: String): String {
  */
 private val BASE_EN: Map<String, String> = mapOf(
     // --- Nexus2 ---
+    "nexus.bg.particles" to "Nexus particles",
+    "nexus.bg.particles.desc" to "Home and Library: ○ △ ✕ □ streaming from a soft glow. Off brings back the wave.",
     "nexus.ach.title" to "Achievements",
     "nexus.ach.seeAll" to "See all",
     "nexus.ach.signIn" to "Sign in to RetroAchievements",
@@ -617,7 +619,7 @@ private val BASE_EN: Map<String, String> = mapOf(
     "app.welcomeBack" to "Welcome Back!",
     "app.menuSfx.imported" to "Imported %d sound effect(s).",
     "app.menuSfx.importNone" to "No matching files. Name them select, back, menu, toggle_on, toggle_off, reset, or slider.",
-    "app.credits.music" to "Music: \"Calm Ambient 1 (Synthwave 4k)\" by The Cynic Project / cynicmusic.com / pixelsphere.org (CC0)",
+    "app.credits.music" to "Music: \"Nexus Ambient\", made for Nexus2 (CC0). UI sounds: original Nexus2 sounds (CC0).",
     "app.credits.museumMusic" to "Icon Museum music: \"Another August\" by The Cynic Project / cynicmusic.com / pixelsphere.org",
     "app.credits.texturesMusic" to "Texture packs music: \"November Snow\" by The Cynic Project / cynicmusic.com / pixelsphere.org (CC0)",
     "app.credits.sfx" to "Menu sounds: \"Interface SFX Pack 1\" from obsydianx.itch.io (CC0)",

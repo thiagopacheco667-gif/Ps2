@@ -351,7 +351,7 @@
  "app.clearCache.done": "已清除 %s 缓存数据。",
  "app.clearCache.doneSmall": "已清除缓存数据。",
  "app.clearCache.empty": "缓存已为空。",
- "app.credits.music": "音乐：《Calm Ambient 1 (Synthwave 4k)》，作者 The Cynic Project / cynicmusic.com / pixelsphere.org（CC0）",
+ "app.credits.music": "Music: \"Nexus Ambient\", made for Nexus2 (CC0). UI sounds: original Nexus2 sounds (CC0).",
  "app.credits.museumMusic": "图标博物馆音乐：《Another August》，The Cynic Project / cynicmusic.com / pixelsphere.org",
  "app.credits.sfx": "菜单音效：《Interface SFX Pack 1》，来自 obsydianx.itch.io（CC0）",
  "app.keyboard.systemIme": "使用系统键盘",
