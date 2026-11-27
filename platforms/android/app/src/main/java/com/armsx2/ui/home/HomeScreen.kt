@@ -568,6 +568,11 @@ fun HomeScreen(
                                 englishTitles = EnglishTitles.enabled.value,
                                 showHidden = com.armsx2.HiddenGames.showHidden.value,
                                 arcadeOnly = com.armsx2.ArcadeOnly.enabled.value,
+                                favoritesOnly = state.favoritesOnly,
+                                duplicatesOnly = state.duplicatesOnly,
+                                duplicateCount = state.duplicateCount,
+                                onToggleFavoritesOnly = { viewModel.setFavoritesOnly(!viewModel.state.value.favoritesOnly) },
+                                onToggleDuplicatesOnly = { viewModel.setDuplicatesOnly(!viewModel.state.value.duplicatesOnly) },
                                 hasCustomBackground = LibraryBackground.uri.value != null,
                                 onDismiss = { overflowMenu = false },
                                 onOpenNavigation = onOpenMenu,
@@ -1084,6 +1089,12 @@ fun HomeScreen(
                 GameMenuAction("▶", str("action.play"), "game-menu.play") {
                     menuGame = null
                     viewModel.launch(game)
+                }
+                // Nexus2: favourites (shown on Home and as a library filter).
+                val isFavorite = com.armsx2.Favorites.keys.value.contains(game.uri.toString())
+                GameMenuAction(if (isFavorite) "♥" else "♡",
+                    str(if (isFavorite) "nexus.fav.remove" else "nexus.fav.add"), "game-menu.favorite") {
+                    viewModel.toggleFavorite(game)
                 }
                 // Save states for this game, straight from the library. Only offered when some
                 // exist — a "Load state" row that opens onto nothing is worse than no row.
@@ -1631,6 +1642,11 @@ private fun LibraryOverflowMenu(
     englishTitles: Boolean,
     showHidden: Boolean,
     arcadeOnly: Boolean,
+    favoritesOnly: Boolean,
+    duplicatesOnly: Boolean,
+    duplicateCount: Int,
+    onToggleFavoritesOnly: () -> Unit,
+    onToggleDuplicatesOnly: () -> Unit,
     hasCustomBackground: Boolean,
     onDismiss: () -> Unit,
     onOpenNavigation: () -> Unit,
@@ -1826,6 +1842,23 @@ private fun LibraryOverflowMenu(
             trailing = if (englishTitles) str("common.on") else str("common.off"),
         ) {
             closeThen(onToggleEnglishTitles)
+        }
+        // Nexus2: favourites / duplicates filters.
+        LibraryOverflowItem(
+            glyph = "♥",
+            label = str("nexus.fav.only"),
+            trailing = if (favoritesOnly) str("common.on") else str("common.off"),
+        ) {
+            closeThen(onToggleFavoritesOnly)
+        }
+        if (duplicateCount > 0 || duplicatesOnly) {
+            LibraryOverflowItem(
+                glyph = "2×",
+                label = str("nexus.dup.only").replace("{count}", duplicateCount.toString()),
+                trailing = if (duplicatesOnly) str("common.on") else str("common.off"),
+            ) {
+                closeThen(onToggleDuplicatesOnly)
+            }
         }
         LibraryOverflowItem(
             glyph = "◍",

@@ -118,11 +118,7 @@ fun AppNavigation() {
             label = "app-route",
         ) { destination ->
             when (destination) {
-                AppRoute.Home -> HomeScreen(
-                    onOpenMenu = { UiNavigator.drawerOpen.value = true },
-                    onOpenGameSettings = { UiNavigator.navigate(AppRoute.Settings(game = it)) },
-                )
-                // Until the new dashboard (stage 5) takes over Início, both sections show the library.
+                AppRoute.Home -> com.armsx2.ui.home.HomeDashboard()
                 AppRoute.Library -> HomeScreen(
                     onOpenMenu = { UiNavigator.drawerOpen.value = true },
                     onOpenGameSettings = { UiNavigator.navigate(AppRoute.Settings(game = it)) },

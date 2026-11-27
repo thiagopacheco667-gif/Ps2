@@ -28,6 +28,11 @@ data class HomeUiState(
      *  Grid and Shelf show categories as their own sections instead, the way Recently Played
      *  works, so filtering the whole library there would hide the sections it is made of. */
     val categoryFilter: String? = null,
+    /** Nexus2: library narrowed to favourites / to games imported more than once. */
+    val favoritesOnly: Boolean = false,
+    val duplicatesOnly: Boolean = false,
+    /** Nexus2: how many library entries share a serial with another entry. */
+    val duplicateCount: Int = 0,
     val scanning: Boolean = false,
     val error: String? = null,
     val selectedIndex: Int = 0,
@@ -167,6 +172,22 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /** Toggle whether hidden games are shown (so they can be un-hidden). */
+    /** Nexus2: the ⋮ menu's "Favourites only" toggle. */
+    fun setFavoritesOnly(value: Boolean) {
+        state.value = buildState(state.value.copy(favoritesOnly = value, duplicatesOnly = if (value) false else state.value.duplicatesOnly))
+    }
+
+    /** Nexus2: the ⋮ menu's "Duplicates only" toggle. */
+    fun setDuplicatesOnly(value: Boolean) {
+        state.value = buildState(state.value.copy(duplicatesOnly = value, favoritesOnly = if (value) false else state.value.favoritesOnly))
+    }
+
+    /** Nexus2: favourite added or removed (game menu); re-filters when "Favourites only" is on. */
+    fun toggleFavorite(game: GameInfo) {
+        com.armsx2.Favorites.toggle(game)
+        state.value = buildState(state.value)
+    }
+
     fun setShowHidden(value: Boolean) {
         com.armsx2.HiddenGames.setShowHidden(value)
         state.value = buildState(state.value)
@@ -200,8 +221,11 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         // library stuck showing nothing with no obvious way back.
         val activeCategory = base.categoryFilter?.takeIf { it in com.armsx2.GameCategories.names() }
         val members = activeCategory?.let { com.armsx2.GameCategories.members(it) }
+        val duplicateKeys = com.armsx2.Duplicates.keysOf(base.allGames)
         val filtered = base.allGames.filter { game ->
             val query = base.query.trim()
+            (!base.favoritesOnly || com.armsx2.Favorites.isFavorite(game)) &&
+            (!base.duplicatesOnly || game.uri.toString() in duplicateKeys) &&
             (members == null || game.settingsKey?.let { it in members } == true) &&
             com.armsx2.ArcadeOnly.shows(game) &&
             // Exclude games the user marked hidden (long-press → Hide), unless "Show hidden" is on.
@@ -232,6 +256,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         return base.copy(
             visibleGames = sorted,
             recentGames = recents,
+            duplicateCount = duplicateKeys.size,
             selectedIndex = base.selectedIndex.coerceIn(0, (sorted.size - 1).coerceAtLeast(0)),
         )
     }
