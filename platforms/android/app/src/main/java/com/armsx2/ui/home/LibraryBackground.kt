@@ -17,7 +17,6 @@ import com.armsx2.runtime.MainActivityRuntime
 object LibraryBackground {
     private const val PREF = "library.background.uri"
     private const val PREF_ANIM = "library.background.animated2d"
-    private const val PREF_PARTICLES = "library.background.nexusParticles"
     private const val PREF_FLURRY = "library.background.flurry"
     private const val PREF_FLURRY_PRESET = "library.background.flurry.preset"
     private const val PREF_SAVER_KIND = "library_saver_kind"
@@ -38,10 +37,6 @@ object LibraryBackground {
      * the devices that already fall back to the 2D wave.
      */
     val animated2D = mutableStateOf(false)
-
-    /** Nexus2: the controller-symbol particle backdrop ([NexusParticleBackground]); the default.
-     *  Off = the previous XMB wave. A screensaver or a custom image still takes precedence. */
-    val particles = mutableStateOf(true)
 
     /**
      * Draw an animated screensaver ([SaverGlView]) instead of the XMB wave. Which one is
@@ -120,7 +115,6 @@ object LibraryBackground {
         loaded = true
         uri.value = runCatching { MainActivityRuntime.prefs.getString(PREF, null) }.getOrNull()
         animated2D.value = runCatching { MainActivityRuntime.prefs.getBoolean(PREF_ANIM, false) }.getOrDefault(false)
-        particles.value = runCatching { MainActivityRuntime.prefs.getBoolean(PREF_PARTICLES, true) }.getOrDefault(true)
         flurry.value = runCatching { MainActivityRuntime.prefs.getBoolean(PREF_FLURRY, false) }.getOrDefault(false)
         flurryPreset.value = runCatching { MainActivityRuntime.prefs.getInt(PREF_FLURRY_PRESET, 99) }.getOrDefault(99)
         saverKind.value = runCatching { MainActivityRuntime.prefs.getInt(PREF_SAVER_KIND, 0) }.getOrDefault(0)
@@ -133,11 +127,6 @@ object LibraryBackground {
             setFlurry(false)
             disarmSaver()
         }
-    }
-
-    fun setParticles(on: Boolean) {
-        particles.value = on
-        runCatching { MainActivityRuntime.prefs.edit().putBoolean(PREF_PARTICLES, on).apply() }
     }
 
     fun setAnimated2D(on: Boolean) {

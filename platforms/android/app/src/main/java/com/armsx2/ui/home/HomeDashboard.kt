@@ -88,12 +88,8 @@ fun HomeDashboard(viewModel: HomeViewModel = viewModel()) {
     val firstFocus = rememberInitialFocusRequester(state.initialized, last?.uri)
 
     Box(Modifier.fillMaxSize().background(colors.background), contentAlignment = Alignment.TopCenter) {
-        // Nexus2: same backdrop as the library, dimmed so the hero and the lists stay the focus.
-        com.armsx2.ui.home.LibraryBackground.ensureLoaded()
-        if (com.armsx2.ui.home.LibraryBackground.particles.value && com.armsx2.ui.home.LibraryBackground.uri.value == null) {
-            // Centred below the Continue hero, which covers the top of the screen.
-            NexusParticleBackground(Modifier.fillMaxSize(), intensity = 0.7f, centerY = 0.68f)
-        }
+        // Nexus2: the running / last-played game's art behind the whole Home (static).
+        com.armsx2.ui.nexus.NexusArtBackground(com.armsx2.ui.nexus.nexusBackdropGame(recents), Modifier.fillMaxSize())
         Column(Modifier.fillMaxSize().widthIn(max = 840.dp).verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
             if (last != null) {
                 ContinueHero(last, forceEn, viewModel, Modifier.focusRequester(firstFocus)) { viewModel.launch(last) }
@@ -154,7 +150,8 @@ private fun ContinueHero(game: GameInfo, forceEn: Boolean, viewModel: HomeViewMo
     val colors = MaterialTheme.colorScheme
     val played = PlayTime.formatPlayed(PlayTime.playedSeconds(game.serial))
     val lastSession = PlayTime.formatLastPlayed(PlayTime.lastPlayedMillis(game.serial))
-    NexusGameBackdrop(game, Modifier.fillMaxWidth()) {
+    // The art is already the screen's background; the hero only lays out on top of it.
+    NexusGameBackdrop(game, Modifier.fillMaxWidth(), art = false) {
         Column {
             Header(viewModel, Modifier.windowInsetsPadding(WindowInsets.statusBars))
             Text(

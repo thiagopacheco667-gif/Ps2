@@ -229,6 +229,9 @@ fun AppTab() {
         // over it. Unset = the built-in blue. Live: XmbGlView's GL thread reads the new color on
         // its next frame (~33ms), so the backdrop updates as the sliders move.
         Column(Modifier.fillMaxWidth().padding(vertical = 5.dp)) {
+            // Nexus2: the animated backdrops (XMB wave, 2D wave, particles, savers) are retired; the
+            // library and Home now show the current/last game's art (NexusArtBackground).
+            if (NEXUS_LEGACY_BACKDROPS) {
             Text(str("app.bgColor"), style = MaterialTheme.typography.titleMedium)
             Text(
                 str("app.bgColor.desc"),
@@ -238,13 +241,6 @@ fun AppTab() {
             // Opt into the lightweight 2D animated backdrop everywhere (the same one older Mali /
             // GL-fail devices already get) instead of the GLES3 XMB wave. The colour options below
             // apply to it too. No effect if a custom background image is set.
-            // Nexus2: the particle backdrop (default). Off brings back the XMB wave options below.
-            ToggleRow(
-                label = str("nexus.bg.particles"),
-                value = com.armsx2.ui.home.LibraryBackground.particles.value,
-                description = str("nexus.bg.particles.desc"),
-                onChange = { com.armsx2.ui.home.LibraryBackground.setParticles(it) },
-            )
             ToggleRow(
                 label = str("app.bg.simple"),
                 value = com.armsx2.ui.home.LibraryBackground.animated2D.value,
@@ -320,6 +316,7 @@ fun AppTab() {
                     )
                 }
             }
+            } // Nexus2: end of the retired animated-backdrop options
             // Colour of the BAR itself (the rounded header pill), as opposed to the animated
             // backdrop the rest of this section controls. Requested because the background picker
             // is labelled "Library Bar Color" but recolours the background — so there was no way to
@@ -365,6 +362,8 @@ fun AppTab() {
                     }
                 }
             }
+            // Nexus2: the backdrop is the game's own art now; wave/particle/saver colours are retired.
+            if (NEXUS_LEGACY_BACKDROPS) {
             // Continuous RGB hue-cycle — same idea as the theme's RGB mode. While on, the fixed
             // color (presets + sliders) doesn't apply, so it's hidden.
             ToggleRow(
@@ -474,6 +473,7 @@ fun AppTab() {
                 ) { Text(str("action.reset")) }
             }
             }
+            } // Nexus2: end of the retired backdrop colour options
         }
 
         ToggleRow(
@@ -1275,3 +1275,7 @@ private fun clearAppCaches(context: android.content.Context): String {
     Toast.makeText(context, summary, Toast.LENGTH_SHORT).show()
     return summary
 }
+
+
+/** Nexus2: kept compiled (not deleted) so the old backdrop options can return without a rewrite. */
+private const val NEXUS_LEGACY_BACKDROPS = false
