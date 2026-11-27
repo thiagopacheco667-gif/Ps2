@@ -1080,7 +1080,7 @@ private fun GraphicsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
         if (entries.isEmpty()) {
             Text(
                 str("renderer.overlayArt.emptyHint"),
-                color = Color(0xFF9AA0A6),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontSize = 12.sp,
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
             )

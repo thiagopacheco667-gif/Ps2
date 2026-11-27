@@ -123,14 +123,18 @@ fun AppNavigation() {
                     onOpenMenu = { UiNavigator.drawerOpen.value = true },
                     onOpenGameSettings = { UiNavigator.navigate(AppRoute.Settings(game = it)) },
                 )
-                AppRoute.Tools -> com.armsx2.ui.tools.ToolsScreen()
+                AppRoute.Tools -> com.armsx2.ui.tools.ToolsScreen(onBack = UiNavigator::up)
+                AppRoute.Saves -> com.armsx2.ui.saves.SavesScreen()
+                AppRoute.SettingsHome -> com.armsx2.ui.settingshub.SettingsHomeScreen()
+                AppRoute.Profile -> com.armsx2.ui.settingshub.ProfileScreen(onBack = UiNavigator::up)
                 is AppRoute.GameDetail -> com.armsx2.ui.game.GameDetailScreen(destination.game, onBack = UiNavigator::up)
                 AppRoute.Diagnostics -> com.armsx2.ui.tools.DiagnosticsScreen(onBack = UiNavigator::up)
                 is AppRoute.Settings -> SettingsScreen(
                     initialCategory = destination.category,
                     game = destination.game,
+                    group = destination.group,
                     onBack = UiNavigator::up,
-                    onOpenAbout = { UiNavigator.navigate(AppRoute.About) },
+                    onOpenAbout = { UiNavigator.openFrom(AppRoute.About) },
                 )
                 is AppRoute.BiosManager -> BiosManagerScreen(
                     onBack = if (destination.returnToArcade) ({ UiNavigator.navigate(AppRoute.Arcade) }) else UiNavigator::up,
@@ -155,7 +159,7 @@ fun AppNavigation() {
                 AppRoute.News -> NewsScreen(onBack = UiNavigator::home)
                 AppRoute.Friends -> FriendsScreen(onBack = UiNavigator::home)
                 AppRoute.RemotePlay -> com.armsx2.remoteplay.RemotePlayScreen(onBack = UiNavigator::home)
-                AppRoute.About -> AboutScreen(onBack = UiNavigator::home)
+                AppRoute.About -> AboutScreen(onBack = UiNavigator::up)
             }
         }
 

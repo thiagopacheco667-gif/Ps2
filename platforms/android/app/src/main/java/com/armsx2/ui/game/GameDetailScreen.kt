@@ -1,5 +1,8 @@
 package com.armsx2.ui.game
 
+import android.content.Context
+import android.net.Uri
+import android.provider.OpenableColumns
 import androidx.annotation.DrawableRes
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -32,8 +35,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -54,13 +55,22 @@ import com.armsx2.ui.common.GameCoverArt
 import com.armsx2.ui.common.padFocusRing
 import com.armsx2.ui.common.rememberInitialFocusRequester
 import com.armsx2.ui.home.HomeViewModel
+import com.armsx2.ui.nexus.NexusChip
+import com.armsx2.ui.nexus.NexusDivider
+import com.armsx2.ui.nexus.NexusGameBackdrop
+import com.armsx2.ui.nexus.NexusIconButton
+import com.armsx2.ui.nexus.NexusPrimaryButton
+import com.armsx2.ui.nexus.NexusRow
+import com.armsx2.ui.nexus.NexusSecondaryButton
+import com.armsx2.ui.nexus.compatLabelKey
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.File
 
 /**
- * Nexus2: one game's page, opened by tapping its cover. Every action here already existed in the
- * long-press game menu (which stays); this page gives them room and adds the game's history.
- * Sub-screens opened from here come back here ([UiNavigator.openFrom]).
+ * Nexus2: one game's page. Art on top (the cover, enlarged and blurred, since box art is all the
+ * library has), name and the facts the app really knows (region, format, file size), PLAY, the
+ * three per-game tools, then one block of information. Sub-screens come back here.
  */
 @Composable
 fun GameDetailScreen(game: GameInfo, onBack: () -> Unit, viewModel: HomeViewModel = viewModel()) {
@@ -75,169 +85,122 @@ fun GameDetailScreen(game: GameInfo, onBack: () -> Unit, viewModel: HomeViewMode
             runCatching { com.armsx2.ui.saves.SaveCatalog.hasSaves(context, game.serial) }.getOrDefault(false)
         }
     }
+    val size by produceState<Long?>(initialValue = null, game.uri) {
+        value = withContext(Dispatchers.IO) { fileSize(context, game.uri) }
+    }
     val copies = Duplicates.groups(viewModel.state.value.allGames)
         .firstOrNull { group -> group.any { it.uri == game.uri } }?.size ?: 1
     val playFocus = rememberInitialFocusRequester(game.uri)
 
     Box(Modifier.fillMaxSize().background(colors.background), contentAlignment = Alignment.TopCenter) {
-        // Hero wash: the accent fading into the background, behind the cover.
-        Box(
-            Modifier.fillMaxWidth().height(300.dp).background(
-                Brush.verticalGradient(listOf(colors.primaryContainer, colors.background)),
-            ),
-        )
-        Column(
-            Modifier.fillMaxSize().widthIn(max = 720.dp).windowInsetsPadding(WindowInsets.statusBars)
-                .verticalScroll(rememberScrollState()).padding(bottom = 28.dp),
-        ) {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
-                CircleButton(R.drawable.ic_nx_back, str("nexus.common.back"), onClick = onBack)
-                Spacer(Modifier.weight(1f))
-                CircleButton(
-                    if (favorite) R.drawable.ic_nx_heart_filled else R.drawable.ic_nx_heart,
-                    str(if (favorite) "nexus.fav.remove" else "nexus.fav.add"),
-                    tint = if (favorite) colors.primary else colors.onSurface,
-                ) { viewModel.toggleFavorite(game) }
-            }
-
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.Bottom,
-                horizontalArrangement = Arrangement.spacedBy(18.dp),
-            ) {
-                GameCoverArt(game, Modifier.width(140.dp).aspectRatio(0.7f))
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        game.displayTitle(forceEn),
-                        fontSize = 22.sp,
-                        lineHeight = 27.sp,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 4,
-                        overflow = TextOverflow.Ellipsis,
-                        color = colors.onBackground,
-                    )
-                    game.serial?.takeIf { it.isNotBlank() }?.let {
-                        Spacer(Modifier.height(8.dp))
-                        Text(it, fontSize = 13.sp, color = colors.onSurfaceVariant)
+        Column(Modifier.fillMaxSize().widthIn(max = 720.dp).verticalScroll(rememberScrollState()).padding(bottom = 28.dp)) {
+            NexusGameBackdrop(game, Modifier.fillMaxWidth()) {
+                Column(Modifier.windowInsetsPadding(WindowInsets.statusBars)) {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
+                        NexusIconButton(R.drawable.ic_nx_back, str("nexus.common.back"), translucent = true, onClick = onBack)
+                        Spacer(Modifier.weight(1f))
+                        NexusIconButton(
+                            if (favorite) R.drawable.ic_nx_heart_filled else R.drawable.ic_nx_heart,
+                            str(if (favorite) "nexus.fav.remove" else "nexus.fav.add"),
+                            tint = if (favorite) colors.primary else null,
+                            translucent = true,
+                        ) { viewModel.toggleFavorite(game) }
                     }
-                    Spacer(Modifier.height(10.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        game.region?.let { Chip(it) }
-                        if (game.extension.isNotBlank()) Chip(game.extension)
-                        if (game.compatibility > 0) Chip("★".repeat(game.compatibility) + "☆".repeat((5 - game.compatibility).coerceAtLeast(0)))
+                    Box(Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 18.dp), contentAlignment = Alignment.Center) {
+                        GameCoverArt(game, Modifier.width(180.dp).aspectRatio(0.7f))
                     }
                 }
             }
 
-            Column(Modifier.padding(horizontal = 20.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                BigButton(str("action.play").uppercase(), primary = true, icon = R.drawable.ic_nx_play,
-                    modifier = Modifier.focusRequester(playFocus)) { viewModel.launch(game) }
+            Column(Modifier.padding(horizontal = 20.dp)) {
+                Text(
+                    game.displayTitle(forceEn),
+                    fontSize = 28.sp,
+                    lineHeight = 33.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                    color = colors.onBackground,
+                )
+                game.serial?.takeIf { it.isNotBlank() }?.let {
+                    Spacer(Modifier.height(6.dp))
+                    Text(it, fontSize = 14.sp, color = colors.onSurfaceVariant)
+                }
+                Spacer(Modifier.height(12.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    game.region?.let { NexusChip(it) }
+                    if (game.extension.isNotBlank()) NexusChip(game.extension)
+                    size?.let { NexusChip(formatSize(it)) }
+                }
+                Spacer(Modifier.height(20.dp))
+                NexusPrimaryButton(str("action.play").uppercase(), Modifier.focusRequester(playFocus)) { viewModel.launch(game) }
                 if (hasSaves) {
-                    BigButton(str("nexus.home.fromSave"), primary = false) {
+                    Spacer(Modifier.height(10.dp))
+                    NexusSecondaryButton(str("nexus.home.fromSave"), Modifier.fillMaxWidth(), icon = R.drawable.ic_nx_save) {
                         UiNavigator.openFrom(AppRoute.SaveManager(focusSerial = game.serial))
                     }
                 }
-            }
-
-            Row(Modifier.padding(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                ActionTile(R.drawable.ic_nx_settings, str("nexus.game.settings"), Modifier.weight(1f)) {
-                    UiNavigator.openFrom(AppRoute.Settings(game = game))
-                }
-                ActionTile(R.drawable.ic_nx_save, str("nexus.home.quick.saves"), Modifier.weight(1f)) {
-                    UiNavigator.openFrom(AppRoute.SaveManager(focusSerial = game.serial))
-                }
-                ActionTile(R.drawable.ic_nx_card, str("nexus.home.quick.cards"), Modifier.weight(1f)) {
-                    UiNavigator.openFrom(AppRoute.MemoryCardManager(game))
-                }
-                ActionTile(R.drawable.ic_nx_disc, str("nexus.home.quick.bios"), Modifier.weight(1f)) {
-                    UiNavigator.openFrom(AppRoute.BiosManager(game))
+                Spacer(Modifier.height(12.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    ActionTile(R.drawable.ic_nx_settings, str("nexus.game.settings"), Modifier.weight(1f)) {
+                        UiNavigator.openFrom(AppRoute.Settings(game = game))
+                    }
+                    ActionTile(R.drawable.ic_nx_save, str("nexus.game.saveStates"), Modifier.weight(1f)) {
+                        UiNavigator.openFrom(AppRoute.SaveManager(focusSerial = game.serial))
+                    }
+                    ActionTile(R.drawable.ic_nx_card, str("nexus.game.memoryCard"), Modifier.weight(1f)) {
+                        UiNavigator.openFrom(AppRoute.MemoryCardManager(game))
+                    }
                 }
             }
 
-            SectionTitle("nexus.game.history")
+            Text(
+                str("nexus.game.info"),
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold,
+                color = colors.onBackground,
+                modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 28.dp, bottom = 4.dp),
+            )
             val played = PlayTime.formatPlayed(PlayTime.playedSeconds(game.serial))
             val last = PlayTime.formatLastPlayed(PlayTime.lastPlayedMillis(game.serial))
             val ach = PlayTime.achievements(game.serial)
-            Column(
-                Modifier.padding(horizontal = 20.dp).fillMaxWidth().clip(RoundedCornerShape(20.dp))
-                    .background(colors.surface).padding(horizontal = 18.dp, vertical = 6.dp),
-            ) {
-                InfoRow(str("nexus.game.playTime"), played.ifEmpty { str("nexus.game.never") })
-                InfoRow(str("nexus.game.lastPlayed"), last.ifEmpty { str("nexus.game.never") })
-                if (ach != null) {
-                    InfoRow(
-                        str("nexus.game.achievements"),
-                        str("nexus.game.achievements.value")
-                            .replace("{n}", ach.softcore.toString()).replace("{total}", ach.total.toString()),
-                    )
-                }
-                if (copies > 1) InfoRow(str("nexus.game.copies"), copies.toString(), last = true)
-                else InfoRow(str("nexus.game.format"), game.extension.ifBlank { "—" }, last = true)
+            NexusRow(str("nexus.game.playTime"), value = played.ifEmpty { str("nexus.game.never") })
+            NexusDivider()
+            NexusRow(str("nexus.game.lastPlayed"), value = last.ifEmpty { str("nexus.game.never") })
+            compatLabelKey(game.compatibility)?.let { key ->
+                NexusDivider()
+                NexusRow(str("nexus.game.compat"), value = str(key))
             }
+            if (ach != null) {
+                NexusDivider()
+                NexusRow(
+                    str("nexus.game.achievements"),
+                    value = str("nexus.game.achievements.value").replace("{n}", ach.softcore.toString()).replace("{total}", ach.total.toString()),
+                )
+            }
+            if (copies > 1) {
+                NexusDivider()
+                NexusRow(str("nexus.game.copies"), value = copies.toString())
+            }
+            NexusDivider()
+            NexusRow(str("nexus.game.bios"), chevron = true, onClick = { UiNavigator.openFrom(AppRoute.BiosManager(game)) })
         }
     }
 }
 
-@Composable
-private fun SectionTitle(key: String) {
-    Text(
-        str(key).uppercase(),
-        fontSize = 13.sp,
-        fontWeight = FontWeight.SemiBold,
-        letterSpacing = 1.sp,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 28.dp, bottom = 12.dp),
-    )
-}
-
-@Composable
-private fun Chip(text: String) {
-    Text(
-        text,
-        fontSize = 12.sp,
-        fontWeight = FontWeight.SemiBold,
-        color = MaterialTheme.colorScheme.onSurface,
-        maxLines = 1,
-        modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.surfaceVariant)
-            .padding(horizontal = 10.dp, vertical = 5.dp),
-    )
-}
-
-@Composable
-private fun InfoRow(label: String, value: String, last: Boolean = false) {
-    val colors = MaterialTheme.colorScheme
-    Column {
-        Row(Modifier.fillMaxWidth().padding(vertical = 13.dp)) {
-            Text(label, fontSize = 14.sp, color = colors.onSurfaceVariant, modifier = Modifier.weight(1f))
-            Text(value, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = colors.onSurface)
+private fun fileSize(context: Context, uri: Uri): Long? = runCatching {
+    when (uri.scheme) {
+        "content" -> context.contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { c ->
+            if (c.moveToFirst() && !c.isNull(0)) c.getLong(0) else null
         }
-        if (!last) Box(Modifier.fillMaxWidth().height(1.dp).background(colors.outlineVariant.copy(alpha = 0.6f)))
+        "file", null -> uri.path?.let(::File)?.takeIf { it.isFile }?.length()
+        else -> null
     }
-}
+}.getOrNull()?.takeIf { it > 0 }
 
-@Composable
-private fun BigButton(
-    label: String,
-    primary: Boolean,
-    @DrawableRes icon: Int? = null,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit,
-) {
-    val colors = MaterialTheme.colorScheme
-    val shape = RoundedCornerShape(16.dp)
-    Row(
-        modifier.fillMaxWidth().height(if (primary) 56.dp else 48.dp).padFocusRing(shape).clip(shape)
-            .background(if (primary) colors.primary else colors.surface).clickable(onClick = onClick),
-        horizontalArrangement = Arrangement.Center,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        val fg = if (primary) colors.onPrimary else colors.onSurface
-        if (icon != null) {
-            Icon(painterResource(icon), contentDescription = null, tint = fg, modifier = Modifier.size(20.dp))
-            Spacer(Modifier.width(10.dp))
-        }
-        Text(label, fontSize = if (primary) 16.sp else 15.sp, fontWeight = FontWeight.Bold, letterSpacing = if (primary) 0.8.sp else 0.sp, color = fg)
-    }
+private fun formatSize(bytes: Long): String = when {
+    bytes >= 1_073_741_824L -> "%.1f GB".format(bytes / 1_073_741_824.0)
+    else -> "%.0f MB".format(bytes / 1_048_576.0)
 }
 
 @Composable
@@ -245,25 +208,12 @@ private fun ActionTile(@DrawableRes icon: Int, label: String, modifier: Modifier
     val colors = MaterialTheme.colorScheme
     val shape = RoundedCornerShape(16.dp)
     Column(
-        modifier.height(84.dp).padFocusRing(shape).clip(shape).background(colors.surface).clickable(onClick = onClick),
+        modifier.height(88.dp).padFocusRing(shape).clip(shape).background(colors.surface).clickable(onClick = onClick),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        Icon(painterResource(icon), contentDescription = null, tint = colors.primary, modifier = Modifier.size(22.dp))
+        Icon(painterResource(icon), contentDescription = null, tint = colors.primary, modifier = Modifier.size(24.dp))
         Spacer(Modifier.height(8.dp))
-        Text(label, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = colors.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
-    }
-}
-
-@Composable
-private fun CircleButton(@DrawableRes icon: Int, description: String, tint: Color? = null, onClick: () -> Unit) {
-    val colors = MaterialTheme.colorScheme
-    val shape = RoundedCornerShape(24.dp)
-    Box(
-        Modifier.size(48.dp).padFocusRing(shape).clip(shape).background(colors.background.copy(alpha = 0.85f))
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(painterResource(icon), contentDescription = description, tint = tint ?: colors.onSurface, modifier = Modifier.size(22.dp))
+        Text(label, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = colors.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }

@@ -16,7 +16,13 @@ sealed interface AppRoute {
     data class Settings(
         val category: SettingsCategory = SettingsCategory.General,
         val game: GameInfo? = null,
+        /** Nexus2: show only this settings group's tabs (a SettingsGroup name); null = all. */
+        val group: String? = null,
     ) : AppRoute
+    // Nexus2: bottom-bar "Saves" and "Ajustes" sections, and the global profile page.
+    data object Saves : AppRoute
+    data object SettingsHome : AppRoute
+    data object Profile : AppRoute
     // Carries an optional game so the per-game BIOS picker can key on it directly
     // (from the library long-press) without the game being loaded; null = global,
     // opened from the drawer (falls back to the currently loaded game if any).
@@ -60,8 +66,8 @@ enum class SettingsCategory {
 enum class MainTab(val route: AppRoute) {
     Home(AppRoute.Home),
     Library(AppRoute.Library),
-    Tools(AppRoute.Tools),
-    Settings(AppRoute.Settings()),
+    Saves(AppRoute.Saves),
+    Settings(AppRoute.SettingsHome),
 }
 
 /** The bar section this route IS, or null for a sub-screen (managers, per-game settings, About…),
@@ -69,8 +75,8 @@ enum class MainTab(val route: AppRoute) {
 fun AppRoute.mainTab(): MainTab? = when (this) {
     AppRoute.Home -> MainTab.Home
     AppRoute.Library -> MainTab.Library
-    AppRoute.Tools -> MainTab.Tools
-    is AppRoute.Settings -> if (game == null) MainTab.Settings else null
+    AppRoute.Saves -> MainTab.Saves
+    AppRoute.SettingsHome -> MainTab.Settings
     else -> null
 }
 
@@ -127,11 +133,11 @@ object UiNavigator {
         }
         when (val current = route.value) {
             AppRoute.Language -> {
-                route.value = AppRoute.Settings(SettingsCategory.General)
+                route.value = popParent() ?: AppRoute.Settings(SettingsCategory.General)
                 return true
             }
             AppRoute.About -> {
-                route.value = AppRoute.Settings(SettingsCategory.General)
+                route.value = popParent() ?: AppRoute.SettingsHome
                 return true
             }
             AppRoute.Home -> Unit

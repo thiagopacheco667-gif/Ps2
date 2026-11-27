@@ -49,5 +49,11 @@ baseado no [PCSX2](https://pcsx2.net). Importado sem modificações do commit `4
 
 ## Redesign 2 (cinematográfico)
 
-- [~] Etapa 1: componentes compartilhados `ui/nexus/NexusUi.kt` (linha, divisória, seção, chip, botões, fundo do jogo, compatibilidade). Perfis unificados: Compatibilidade, Equilibrado, Desempenho + Personalizado.
-- [~] Etapa 2: Home centrada no último jogo (capa ampliada e desfocada como arte, pois só há box art), recentes, estado do sistema em linhas, atividade recente (último save, último jogo, última atividade).
+- [x] Etapa 1: componentes compartilhados `ui/nexus/NexusUi.kt` (linha, divisória, seção, chip, botões, fundo do jogo, compatibilidade). Perfis unificados: Compatibilidade, Equilibrado, Desempenho + Personalizado.
+- [x] Etapa 2: Home centrada no último jogo (capa ampliada e desfocada como arte, pois só há box art), recentes, estado do sistema em linhas, atividade recente (último save, último jogo, última atividade).
+- [~] Etapa 3: biblioteca com filtros Todos/PS2/Favoritos/Recentes e contagem; página do jogo com arte, região, formato, tamanho do arquivo, JOGAR, Configurações/Save States/Memory Card e bloco de informações.
+- [~] Etapa 4: barra Início/Jogos/Saves/Ajustes; aba Saves separando Save States (lista real das pastas) e Memory Cards.
+- [~] Etapa 5: Ajustes em linhas (Gráficos, Emulação, Áudio, Controles, Sistema, Desempenho e diagnóstico, Perfil atual); cada uma abre sua página com as abas reais.
+- [~] Módulo por jogo: cabeçalho (capa, região, perfil, restaurar padrão), só Gráficos/Emulação/Áudio/Controles, "↺ Global" por opção (remove só aquela chave do arquivo do jogo e regrava o INI), perfis por jogo.
+- [~] Etapa 6: menu de pausa mantido (já tem salvar/carregar estado, vídeo, avanço rápido, indicadores); só a cor fixa trocada pelo tema. Controles virtuais sem mudança de lógica.
+- [~] Desempenho e diagnóstico: FPS, VPS, velocidade, tempo de frame, uso de GPU, backend, resolução e memória ao vivo (só com jogo aberto), temperaturas.

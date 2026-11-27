@@ -59,7 +59,7 @@ private data class TabSpec(val tab: MainTab, val labelKey: String, @DrawableRes 
 private val Tabs = listOf(
     TabSpec(MainTab.Home, "nexus.nav.home", R.drawable.ic_nx_home),
     TabSpec(MainTab.Library, "nexus.nav.games", R.drawable.ic_nx_games),
-    TabSpec(MainTab.Tools, "nexus.nav.tools", R.drawable.ic_nx_tools),
+    TabSpec(MainTab.Saves, "nexus.nav.saves", R.drawable.ic_nx_save),
     TabSpec(MainTab.Settings, "nexus.nav.settings", R.drawable.ic_nx_settings),
 )
 
