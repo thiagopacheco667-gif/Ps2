@@ -46,3 +46,8 @@ baseado no [PCSX2](https://pcsx2.net). Importado sem modificações do commit `4
 - [x] Etapa 4: navegação (PR #4).
 - [x] Etapa 5: painel do Início, favoritos e duplicados (PR #5).
 - [~] Etapas 6–10 (PR #6): página do jogo, ferramentas em grupos + Diagnóstico, Ajustes em 7 seções com modo Simples/Avançado, navegação com pilha de volta.
+
+## Redesign 2 (cinematográfico)
+
+- [~] Etapa 1: componentes compartilhados `ui/nexus/NexusUi.kt` (linha, divisória, seção, chip, botões, fundo do jogo, compatibilidade). Perfis unificados: Compatibilidade, Equilibrado, Desempenho + Personalizado.
+- [~] Etapa 2: Home centrada no último jogo (capa ampliada e desfocada como arte, pois só há box art), recentes, estado do sistema em linhas, atividade recente (último save, último jogo, última atividade).

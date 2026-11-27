@@ -446,6 +446,8 @@ class GameLibraryRepository(private val context: Context) {
         MainActivityRuntime.prefs.edit {
             putString("gamesCacheKey", cacheKey(directories, withoutSubfolders))
                 .putString("gamesCache", array.toString())
+                // Nexus2: when the folders were last scanned (Home's "Last check").
+                .putLong("nexus.library.lastScanAt", System.currentTimeMillis())
             }
     }
 

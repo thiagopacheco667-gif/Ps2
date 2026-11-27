@@ -17,8 +17,8 @@ import kotlin.math.abs
  * shown as selected only while every value it sets still matches.
  *
  * Values are chosen for phone GPUs such as the Mali-G720: blending accuracy stays at Basic or
- * below except in Quality (higher levels cost a lot on tile-based GPUs), and anisotropic
- * filtering stays off except in Quality.
+ * below except in Compatibility (higher levels cost a lot on tile-based GPUs), and anisotropic
+ * filtering stays off. "Custom" is any combination that matches none of them.
  */
 internal data class GraphicsProfile(
     val labelKey: String,
@@ -29,14 +29,13 @@ internal data class GraphicsProfile(
 )
 
 internal fun graphicsProfiles(): List<GraphicsProfile> = listOf(
-    // Native resolution and the cheapest blending: least heat and longest battery.
-    GraphicsProfile("nexus.profile.battery", 1.0f, 0, 0, DeviceTier.mtvuDefault()),
-    // Native resolution with Basic blending: full speed in heavy games.
-    GraphicsProfile("nexus.profile.performance", 1.0f, 1, 0, true),
-    // 2x (720p class): the recommended default for a Dimensity 8400 / Mali-G720.
+    // Accuracy first: native resolution, Medium blending, and MTVU off (the threaded VU1 is the
+    // one speed option some games are known to break on).
+    GraphicsProfile("nexus.profile.compatibility", 1.0f, 2, 0, false),
+    // 2x (720p class) with Basic blending: the recommended default for a Dimensity 8400 / Mali-G720.
     GraphicsProfile("nexus.profile.balanced", 2.0f, 1, 0, true),
-    // 3x with Medium blending and 4x anisotropic: for lighter games, runs warmer.
-    GraphicsProfile("nexus.profile.quality", 3.0f, 2, 4, true),
+    // Native resolution, Minimum blending, MTVU on: the lightest load on the GPU and CPU.
+    GraphicsProfile("nexus.profile.performance", 1.0f, 0, 0, true),
 )
 
 internal fun GraphicsProfile.applyTo(s: Settings): Settings = s.copy(
@@ -81,6 +80,10 @@ internal fun noBlurActive(s: Settings): Boolean =
     s.display.antiBlur && s.display.disableInterlaceOffset && s.emuCore.enableNoInterlacingPatches &&
         s.output.deinterlaceMode == DEINTERLACE_ADAPTIVE_TFF && s.graphics.displayBilinear == DISPLAY_FILTER_SHARP
 
+/** Label key of the profile [s] matches, or the Custom one. */
+internal fun currentProfileKey(s: Settings): String =
+    graphicsProfiles().firstOrNull { it.matches(s) }?.labelKey ?: "nexus.profile.custom"
+
 // Index into the Deinterlacing row (Auto, Off, Weave TFF, Weave BFF, Bob TFF, Bob BFF,
 // Blend TFF, Blend BFF, Adapt TFF, Adapt BFF), which is PCSX2's GSInterlaceMode order.
 private const val DEINTERLACE_ADAPTIVE_TFF = 8
@@ -90,12 +93,15 @@ private const val DISPLAY_FILTER_SHARP = 2
 @Composable
 internal fun QuickProfilesSection(s: Settings, apply: (Settings) -> Unit) {
     val profiles = graphicsProfiles()
+    // "Custom" is not a preset: it is shown whenever the values match none of the profiles (the
+    // player tuned something by hand), and picking it changes nothing, so those tweaks are kept.
+    val matched = profiles.indexOfFirst { it.matches(s) }
     SegmentedRow(
         label = str("nexus.profile.label"),
-        options = profiles.map { str(it.labelKey) },
-        selectedIndex = profiles.indexOfFirst { it.matches(s) },
+        options = profiles.map { str(it.labelKey) } + str("nexus.profile.custom"),
+        selectedIndex = if (matched >= 0) matched else profiles.size,
         description = str("nexus.profile.description"),
-        onChange = { i -> apply(profiles[i].applyTo(s)) },
+        onChange = { i -> profiles.getOrNull(i)?.let { apply(it.applyTo(s)) } },
     )
     SettingsDivider()
     ToggleRow(
