@@ -16,6 +16,8 @@ object AchievementsProgress {
     /** rc_client's RC_CLIENT_ACHIEVEMENT_UNLOCKED_* bits, as emitted in "unlockedMask". */
     private const val MASK_SOFTCORE = 1
     private const val MASK_HARDCORE = 2
+    /** rc_client.c RC_CLIENT_ACHIEVEMENT_WARNING_ID: ids from here on are client notices. */
+    const val WARNING_ID = 101000001L
 
     /**
      * Read the live set and store softcore/hardcore counts for [serial]. Safe to call when no game
@@ -39,9 +41,17 @@ object AchievementsProgress {
         val json = runCatching { NativeApp.getAchievementsJSON() }.getOrNull().orEmpty()
         if (json.isEmpty()) return
         runCatching {
-            val items = JSONObject(json).optJSONArray("items") ?: return
+            val all = JSONObject(json).optJSONArray("items") ?: return
+            if (all.length() == 0) return
+            // Nexus2: rc_client's warning entries (ids from 101000001, e.g. "Unsupported Game
+            // Version") are notices, not achievements. A set made only of them = unsupported version.
+            val items = org.json.JSONArray()
+            for (i in 0 until all.length()) {
+                val o = all.optJSONObject(i) ?: continue
+                if (o.optLong("id") < WARNING_ID) items.put(o)
+            }
             val total = items.length()
-            if (total == 0) return
+            if (total == 0) { PlayTime.recordUnsupported(s); return }
             var softcore = 0
             var hardcore = 0
             for (i in 0 until total) {

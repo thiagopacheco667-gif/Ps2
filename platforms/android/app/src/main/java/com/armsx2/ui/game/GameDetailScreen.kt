@@ -171,13 +171,31 @@ fun GameDetailScreen(game: GameInfo, onBack: () -> Unit, viewModel: HomeViewMode
                 NexusDivider()
                 NexusRow(str("nexus.game.compat"), value = str(key))
             }
-            if (ach != null) {
+            PlayTime.revision.value
+            // Nexus2: four separate things, never merged: achievements unlocked, their percentage
+            // (RetroAchievements), an unsupported disc version (no figures at all), and campaign
+            // completion, which only the player can state (no source knows when a PS2 story ends).
+            if (PlayTime.achievementsUnsupported(game.serial)) {
+                NexusDivider()
+                NexusRow(str("nexus.game.achievements"), value = str("nexus.ach.unsupported"), valueColor = com.armsx2.ui.nexus.NexusColors.Warn)
+            } else if (ach != null) {
                 NexusDivider()
                 NexusRow(
                     str("nexus.game.achievements"),
-                    value = str("nexus.game.achievements.value").replace("{n}", ach.softcore.toString()).replace("{total}", ach.total.toString()),
+                    value = str("nexus.game.achievements.value").replace("{n}", ach.softcore.toString()).replace("{total}", ach.total.toString()) +
+                        " · " + (ach.softcore * 100 / ach.total) + "%",
                 )
             }
+            NexusDivider()
+            val completedAt = GameCompletionState(game.serial)
+            NexusRow(
+                str("nexus.game.completion"),
+                description = str(if (completedAt > 0L) "nexus.game.completion.unmark" else "nexus.game.completion.mark"),
+                value = if (completedAt > 0L) str("nexus.game.completion.manual").replace("{date}", PlayTime.formatLastPlayed(completedAt))
+                    else str("nexus.game.completion.unverified"),
+                valueColor = if (completedAt > 0L) com.armsx2.ui.nexus.NexusColors.Ok else null,
+                onClick = { com.armsx2.GameCompletion.set(game.serial, completedAt <= 0L) },
+            )
             if (copies > 1) {
                 NexusDivider()
                 NexusRow(str("nexus.game.copies"), value = copies.toString())
@@ -216,4 +234,10 @@ private fun ActionTile(@DrawableRes icon: Int, label: String, modifier: Modifier
         Spacer(Modifier.height(8.dp))
         Text(label, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = colors.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
+}
+
+@Composable
+private fun GameCompletionState(serial: String?): Long {
+    PlayTime.revision.value
+    return com.armsx2.GameCompletion.markedAt(serial)
 }

@@ -88,11 +88,51 @@ object PlayTime {
         if (total <= 0) return
         runCatching {
             MainActivityRuntime.prefs.edit()
+                .remove(ACH_UNSUPPORTED_PREFIX + s)
                 .putInt(ACH_UNLOCKED_PREFIX + s, softcore.coerceIn(0, total))
                 .putInt(ACH_HARDCORE_PREFIX + s, hardcore.coerceIn(0, total))
                 .putInt(ACH_TOTAL_PREFIX + s, total)
                 .apply()
         }
+        bumpRevision()
+    }
+
+    private const val ACH_UNSUPPORTED_PREFIX = "ach.unsupported."
+
+    /**
+     * Nexus2: RetroAchievements recognised this disc as a version its set does not support. The set
+     * the server sends then holds only warning entries ("Unsupported Game Version", ids from
+     * 101000001), which used to be counted as real achievements: 2/2, "100%". Any stored figure for
+     * the game is dropped and the game is flagged instead, so nothing shows a percentage for it.
+     */
+    fun recordUnsupported(serial: String?) {
+        val s = serial?.takeIf { it.isNotEmpty() } ?: return
+        runCatching {
+            MainActivityRuntime.prefs.edit()
+                .remove(ACH_UNLOCKED_PREFIX + s).remove(ACH_HARDCORE_PREFIX + s).remove(ACH_TOTAL_PREFIX + s)
+                .putBoolean(ACH_UNSUPPORTED_PREFIX + s, true)
+                .apply()
+        }
+        bumpRevision()
+    }
+
+    fun achievementsUnsupported(serial: String?): Boolean =
+        serial?.takeIf { it.isNotEmpty() }?.let { s ->
+            runCatching { MainActivityRuntime.prefs.getBoolean(ACH_UNSUPPORTED_PREFIX + s, false) }.getOrDefault(false)
+        } ?: false
+
+    /**
+     * One-time: drop every stored achievement figure. Earlier builds counted the warning entries of
+     * unsupported versions as achievements, and there is no way to tell those figures apart now.
+     * Real ones come back the next time the game runs (or on the next library sync).
+     */
+    fun migrateWarningAchievements() {
+        val prefs = runCatching { MainActivityRuntime.prefs }.getOrNull() ?: return
+        if (prefs.getBoolean("nexus.ach.migrated.warnings", false)) return
+        val e = prefs.edit()
+        prefs.all.keys.filter { it.startsWith(ACH_UNLOCKED_PREFIX) || it.startsWith(ACH_HARDCORE_PREFIX) || it.startsWith(ACH_TOTAL_PREFIX) }
+            .forEach { e.remove(it) }
+        e.putBoolean("nexus.ach.migrated.warnings", true).apply()
         bumpRevision()
     }
 
