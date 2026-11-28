@@ -82,6 +82,8 @@ fun HomeDashboard(viewModel: HomeViewModel = viewModel()) {
     LaunchedEffect(directories, nativeReady) { viewModel.load(directories, nativeReady) }
     // Nexus2: if the app died during "Analisar desempenho", put the game's own settings back.
     LaunchedEffect(Unit) { com.armsx2.perf.NexusBenchmark.recoverIfInterrupted() }
+    // Nexus2: if the app closed on an error last time, show the report once (with Copy).
+    LastCrashDialog()
 
     val colors = MaterialTheme.colorScheme
     val forceEn = EnglishTitles.enabled.value

@@ -161,6 +161,9 @@ fun str(key: String): String {
  */
 private val BASE_EN: Map<String, String> = mapOf(
     // --- Nexus2 ---
+    "nexus.crash.title" to "The app closed on an error",
+    "nexus.crash.copy" to "Copy report",
+    "nexus.crash.close" to "Close",
     "nexus.home.lastSaveAt" to "Last save · {date}",
     "nexus.home.running" to "Running",
     "nexus.home.backToGame" to "BACK TO GAME",

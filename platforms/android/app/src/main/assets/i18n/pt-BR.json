@@ -1,4 +1,7 @@
 {
+ "nexus.crash.title": "O app fechou por um erro",
+ "nexus.crash.copy": "Copiar relatório",
+ "nexus.crash.close": "Fechar",
  "nexus.home.lastSaveAt": "Último save · {date}",
  "nexus.home.running": "Em execução",
  "nexus.home.backToGame": "VOLTAR AO JOGO",
