@@ -130,6 +130,15 @@ fun HomeDashboard(viewModel: HomeViewModel = viewModel()) {
 
             // Compact and collapsible: technical detail lives in Settings → Diagnostics / Nexus Performance.
             SystemStatus(state, shown.size)
+
+            // Nexus2: where the emulation comes from, quietly, at the end of Home.
+            Column(
+                Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 28.dp, bottom = 8.dp)
+                    .clickable { UiNavigator.openFrom(AppRoute.About) },
+            ) {
+                Text("Powered by ARMSX2", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = colors.onSurfaceVariant)
+                Text(str("nexus.home.poweredBy"), fontSize = 12.sp, lineHeight = 16.sp, color = colors.onSurfaceVariant.copy(alpha = 0.8f))
+            }
         }
     }
 }
