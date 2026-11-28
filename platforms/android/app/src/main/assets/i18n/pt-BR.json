@@ -1,4 +1,11 @@
 {
+ "bench.abort.cancel": "cancelada",
+ "bench.abort.noGame": "jogo não identificado",
+ "bench.abort.paused": "o jogo foi pausado",
+ "bench.abort.menu": "o menu foi aberto",
+ "bench.abort.load": "a cena de teste não pôde ser carregada",
+ "bench.abort.error": "erro inesperado",
+ "bench.notSameScene": "Não foi possível gravar estado deste disco, então as rodadas seguiram uma após a outra em cena diferente: os números aparecem, mas sem comparação.",
  "bench.entry.desc": "Sistema, medição ao vivo e análise de desempenho",
  "bench.na": "Não disponível",
  "bench.sys": "Estado do sistema",

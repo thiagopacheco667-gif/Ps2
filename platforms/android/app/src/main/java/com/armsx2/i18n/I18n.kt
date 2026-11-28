@@ -161,6 +161,13 @@ fun str(key: String): String {
  */
 private val BASE_EN: Map<String, String> = mapOf(
     // --- Nexus2 ---
+    "bench.abort.cancel" to "cancelled",
+    "bench.abort.noGame" to "no game identified",
+    "bench.abort.paused" to "the game was paused",
+    "bench.abort.menu" to "the menu was opened",
+    "bench.abort.load" to "the test scene could not be loaded",
+    "bench.abort.error" to "unexpected error",
+    "bench.notSameScene" to "No save state was possible for this disc, so the runs followed each other on a moving scene: numbers are shown, but not compared.",
     "bench.entry.desc" to "System, live counters, performance analysis",
     "bench.na" to "Not available",
     "bench.sys" to "System state",
