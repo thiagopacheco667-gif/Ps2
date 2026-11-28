@@ -3,10 +3,15 @@ package com.armsx2.ui.home
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -51,28 +56,33 @@ fun LastCrashDialog() {
         dismissed = true
         runCatching { MainActivityRuntime.prefs.edit().putLong(PREF_SEEN, file.lastModified()).apply() }
     }
-    AlertDialog(
-        onDismissRequest = { close() },
-        title = { Text(str("nexus.crash.title")) },
-        text = {
+    com.armsx2.ui.common.PadModal(key = "nexus-last-crash", onDismiss = { close() }) {
+        val colors = androidx.compose.material3.MaterialTheme.colorScheme
+        androidx.compose.foundation.layout.Column(
+            Modifier.widthIn(max = 520.dp).clip(RoundedCornerShape(20.dp)).background(colors.surface).padding(20.dp),
+        ) {
+            Text(str("nexus.crash.title"), fontSize = 18.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold, color = colors.onSurface)
+            androidx.compose.foundation.layout.Spacer(Modifier.height(10.dp))
             Text(
                 text,
                 fontSize = 11.sp,
                 lineHeight = 14.sp,
-                modifier = Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState()),
+                color = colors.onSurfaceVariant,
+                modifier = Modifier.heightIn(max = 340.dp).verticalScroll(rememberScrollState()),
             )
-        },
-        confirmButton = {
-            TextButton(onClick = {
-                runCatching {
-                    (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
-                        .setPrimaryClip(ClipData.newPlainText("Nexus2 crash", text))
-                }
-                close()
-            }) { Text(str("nexus.crash.copy")) }
-        },
-        dismissButton = { TextButton(onClick = { close() }) { Text(str("nexus.crash.close")) } },
-    )
+            androidx.compose.foundation.layout.Spacer(Modifier.height(12.dp))
+            androidx.compose.foundation.layout.Row(horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = {
+                    runCatching {
+                        (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
+                            .setPrimaryClip(ClipData.newPlainText("Nexus2 crash", text))
+                    }
+                    close()
+                }) { Text(str("nexus.crash.copy")) }
+                TextButton(onClick = { close() }) { Text(str("nexus.crash.close")) }
+            }
+        }
+    }
 }
 
 private const val PREF_SEEN = "nexus.crash.lastSeen"
