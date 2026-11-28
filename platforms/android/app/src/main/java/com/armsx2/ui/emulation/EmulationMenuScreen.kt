@@ -1309,6 +1309,12 @@ private fun PerformancePane(state: EmulationMenuUiState, viewModel: EmulationMen
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp),
         )
+        // The main action: find this game's best MTVU / blending / resolution and apply it to it.
+        CompactAction(str("bench.run.optimize"), "✦", Modifier.fillMaxWidth()) {
+            viewModel.resume()
+            com.armsx2.perf.NexusBenchmark.startOptimize(benchContext)
+        }
+        Spacer(Modifier.height(6.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             CompactAction(str("bench.run.compare"), "▶", Modifier.weight(1f)) {
                 viewModel.resume()

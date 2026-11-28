@@ -76,3 +76,10 @@ baseado no [PCSX2](https://pcsx2.net). Importado sem modificações do commit `4
 - Auditoria (2 agentes, só leitura): CPU/ARM64 e Mali-G720. Principais achados: regra MediaTek desliga framebuffer fetch no Vulkan (palpite, só o 8300 isento); "Auto" escolhe OpenGL na G720; Mali sem dual-source faz blend em software mesmo no Mínimo; 3 opções de VU na UI não são lidas pelo núcleo; "Desempenho sustentado" troca a afinidade 7→0; nice −1 não aplicado no modo 7.
 - Medição: pause → Desempenho → Analisar desempenho. Comparar = estado privado + mesma cena, 3 configurações (6 s aquecimento + 20 s), contadores do núcleo a 4 Hz; Sustentado = 1º e último minuto de 10 min. Configurações de teste só como overrides do jogo; blob original restaurado byte a byte (e recuperado na próxima abertura se o app morrer). Nada estimado: sem dado = "Não disponível" (1% lows não existem no núcleo).
 - Página Ajustes → Nexus Performance: estado do sistema, ao vivo, "O que está limitando seu jogo?" (só com evidência), resultados, diagnóstico do log do núcleo.
+
+### Medições reais (Poco X7 Pro, MT6899, Mali-G720 MC7, driver r49p1)
+
+- Log: fbfetch=NO(barrier-fallback) confirmado (regra MediaTek); dualSrc=yes (a auditoria supunha não); afinidade 0xf0 com núcleo prime 0x80 separado.
+- Yakuza (SLUS-21348), mesma cena: 2x Médio 99,2% (10% do tempo <97%, mín 89%); 2x Básico 100%/0%; 1x Mínimo 100%, GPU 24%. Jogo fixo em 30 FPS.
+- Tony Hawk's Downhill Jam (SLUS-21456): MTVU off 53,7 FPS do jogo; MTVU on 37,5 (2x Básico) e 36,3 (1x Mínimo). EE 91% com MTVU off, 55% com on.
+- Decisões: MTVU saiu dos perfis (decidido por jogo); "Otimizar este jogo" testa uma variável por vez (MTVU, blending→Básico, resolução ±1) na mesma cena e aplica só o vencedor no jogo, com Desfazer; padrão global Mali = blending Básico (botão, reversível). Rótulos corrigidos: getVPS() = FPS interno do jogo.
