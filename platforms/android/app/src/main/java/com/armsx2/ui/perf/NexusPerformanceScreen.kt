@@ -186,13 +186,14 @@ private fun ResultCard(r: NexusBenchmark.Result) {
             fontSize = 12.sp, color = colors.onSurfaceVariant,
         )
         val base = r.runs.firstOrNull()
+        if (!r.sameScene) Text(str("bench.notSameScene"), fontSize = 12.sp, color = com.armsx2.ui.nexus.NexusColors.Warn, modifier = Modifier.padding(top = 6.dp))
         r.runs.forEach { u ->
             Spacer(Modifier.height(12.dp))
             Text(str(u.label), fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = colors.primary)
             Text(u.detail, fontSize = 12.sp, color = colors.onSurfaceVariant)
             fun f(v: Float?, unit: String, d: Int = 1) = v?.let { String.format(Locale.US, "%.${d}f", it) + unit } ?: na
             fun delta(v: Float?, b: Float?): String =
-                if (u === base || v == null || b == null || b == 0f) "" else String.format(Locale.US, "  (%+.1f%%)", (v - b) / b * 100f)
+                if (!r.sameScene || u === base || v == null || b == null || b == 0f) "" else String.format(Locale.US, "  (%+.1f%%)", (v - b) / b * 100f)
             Metric(str("bench.m.speed"), f(u.speedAvg, "%", 1) + delta(u.speedAvg, base?.speedAvg))
             Metric(str("bench.m.speedMin"), f(u.speedMin, "%", 0))
             Metric(str("bench.m.below"), f(u.belowFullPct, "%", 0))
@@ -285,7 +286,7 @@ fun NexusBenchmarkHud() {
                 (if (p.remainingSec > 0) " · ${p.remainingSec}s" else "")
         }
         outcome == "done" -> str("bench.hud.done")
-        outcome != null -> str("bench.hud.aborted")
+        outcome != null -> str("bench.hud.aborted") + " · " + str("bench.abort." + outcome.substringAfter("aborted:"))
         else -> return
     }
     Box(Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.statusBars).padding(top = 8.dp), contentAlignment = Alignment.TopCenter) {

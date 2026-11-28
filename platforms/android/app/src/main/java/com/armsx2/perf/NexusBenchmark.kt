@@ -107,6 +107,9 @@ object NexusBenchmark {
         val gpu: String,
         val runs: List<Run>,
         val verdict: String?,
+        /** False when the core refused a save state (e.g. a disc whose CRC reads 0): the runs then
+         *  follow each other on a moving scene and are not directly comparable. */
+        val sameScene: Boolean = true,
     )
 
     fun results(): List<Result> = runCatching {
@@ -150,14 +153,20 @@ object NexusBenchmark {
             val outcome = runCatching { execute(app, kind) }
             progress.value = null
             lastOutcome.value = outcome.exceptionOrNull()?.let { e ->
-                if (e is kotlinx.coroutines.CancellationException) "aborted" else "aborted:${e.message.orEmpty()}"
+                when (e) {
+                    is kotlinx.coroutines.CancellationException -> "aborted:cancel"
+                    is Abort -> "aborted:" + e.reason
+                    else -> "aborted:error"
+                }
             } ?: "done"
+            outcome.exceptionOrNull()?.let { android.util.Log.w("NexusBenchmark", "aborted", it) }
         }
     }
 
     // ---- the run -------------------------------------------------------------------------
 
-    private class Abort(msg: String) : Exception(msg)
+    /** [reason] is a string key suffix: bench.abort.<reason>. */
+    private class Abort(val reason: String) : Exception(reason)
 
     private suspend fun execute(context: Context, kind: Kind) {
         // Started from the pause menu: give the menu a moment to close and the game to resume.
@@ -166,9 +175,9 @@ object NexusBenchmark {
             (MainActivityRuntime.eState.value != EmuState.RUNNING || WindowImpl.overlayVisible.value || WindowImpl.inGameScreen.value != null)
         ) delay(100)
         delay(500)
-        val game = MainActivityRuntime.currentGame.value ?: throw Abort("no game")
-        val serial = InGameOverlay.currentSerial.value?.takeIf { it.isNotBlank() } ?: throw Abort("no serial")
-        if (MainActivityRuntime.eState.value != EmuState.RUNNING) throw Abort("not running")
+        val game = MainActivityRuntime.currentGame.value ?: throw Abort("noGame")
+        val serial = InGameOverlay.currentSerial.value?.takeIf { it.isNotBlank() } ?: throw Abort("noGame")
+        if (MainActivityRuntime.eState.value != EmuState.RUNNING) throw Abort("paused")
 
         val original: Settings = InGameOverlay.settingsState.value
         val originalScope = InGameOverlay.settingsScope.value
@@ -201,16 +210,19 @@ object NexusBenchmark {
         ).apply()
 
         val runs = mutableListOf<Run>()
+        var sameScene = kind == Kind.Compare
         try {
             progress.value = Progress(kind, 0, configs.size, "", "state", 0)
             if (kind == Kind.Compare) {
-                if (!saveState(stateFile)) throw Abort("save state failed")
+                // No save state (the card is busy for too long, or the core cannot name a state for
+                // this disc): carry on without it, and say the scenes differ instead of comparing them.
+                if (!saveState(stateFile)) sameScene = false
             }
 
             configs.forEachIndexed { index, (label, detail, settings) ->
                 if (index > 0 || kind == Kind.Compare) apply(settings)
-                if (kind == Kind.Compare) {
-                    if (!loadState(stateFile)) throw Abort("load state failed")
+                if (kind == Kind.Compare && sameScene) {
+                    if (!loadState(stateFile)) throw Abort("load")
                 }
                 awaitRunning()
                 if (kind == Kind.Sustained) {
@@ -231,12 +243,12 @@ object NexusBenchmark {
                 runCatching { stateFile.delete() }
             }
         }
-        store(Result(System.currentTimeMillis(), kind, game.title, serial, original.output.renderer, com.armsx2.GpuInfo.rendererName().orEmpty(), runs, verdict(kind, runs, configs.map { it.third })))
+        store(Result(System.currentTimeMillis(), kind, game.title, serial, original.output.renderer, com.armsx2.GpuInfo.rendererName().orEmpty(), runs, verdict(kind, runs, configs.map { it.third }, sameScene), sameScene))
     }
 
     /** The core refuses a save while the memory card is mid-write; try for a few seconds. */
     private suspend fun saveState(f: File): Boolean {
-        repeat(10) {
+        repeat(25) {
             if (withContext(Dispatchers.IO) { runCatching { NativeApp.saveStateToPath(f.absolutePath) }.getOrDefault(false) }) return true
             delay(400)
         }
@@ -284,8 +296,16 @@ object NexusBenchmark {
         while (MainActivityRuntime.eState.value != EmuState.RUNNING && System.currentTimeMillis() < end) delay(100)
     }
 
+    private var notRunningSince = 0L
+
+    /** The user opening the menu aborts at once; the VM not running aborts after 3 s, since a
+     *  settings commit or a state load parks it briefly on its own. */
     private fun checkRunning() {
-        if (MainActivityRuntime.eState.value != EmuState.RUNNING) throw Abort("paused")
+        if (MainActivityRuntime.eState.value != EmuState.RUNNING) {
+            val now = System.currentTimeMillis()
+            if (notRunningSince == 0L) notRunningSince = now
+            if (now - notRunningSince > 3_000L) throw Abort("paused")
+        } else notRunningSince = 0L
         if (WindowImpl.overlayVisible.value || WindowImpl.inGameScreen.value != null) throw Abort("menu")
     }
 
@@ -356,7 +376,7 @@ object NexusBenchmark {
      * it; otherwise "bench.why.unknown". Thresholds are the core's own definitions: speed under 97%
      * means the game is not running at full speed; a thread at ≥95% means it has no time left.
      */
-    private fun verdict(kind: Kind, runs: List<Run>, configs: List<Settings>): String {
+    private fun verdict(kind: Kind, runs: List<Run>, configs: List<Settings>, sameScene: Boolean): String {
         val base = runs.firstOrNull() ?: return "bench.why.unknown"
         if (kind == Kind.Sustained && runs.size == 2) {
             val a = runs[0].speedAvg; val b = runs[1].speedAvg
@@ -370,7 +390,7 @@ object NexusBenchmark {
         if ((base.cpuAvg ?: 0f) >= 95f) return "bench.why.cpu"
         if ((base.gpuAvg ?: 0f) >= 95f || (base.gsAvg ?: 0f) >= 95f) return "bench.why.gpu"
         // Resolution: a run at lower internal resolution, otherwise similar, clearly faster.
-        if (kind == Kind.Compare) {
+        if (kind == Kind.Compare && sameScene) {
             val baseScale = configs[0].output.upscaleFloat
             runs.drop(1).forEachIndexed { i, r ->
                 val s = configs[i + 1].output.upscaleFloat
@@ -420,7 +440,7 @@ object NexusBenchmark {
 
     private fun toJson(r: Result) = JSONObject()
         .put("at", r.at).put("kind", r.kind.name).put("title", r.title).put("serial", r.serial)
-        .put("renderer", r.renderer).put("gpu", r.gpu).put("verdict", r.verdict)
+        .put("renderer", r.renderer).put("gpu", r.gpu).put("verdict", r.verdict).put("sameScene", r.sameScene)
         .put("runs", JSONArray().apply {
             r.runs.forEach { u ->
                 put(JSONObject().put("label", u.label).put("detail", u.detail).put("samples", u.samples)
@@ -445,6 +465,7 @@ object NexusBenchmark {
             renderer = o.optString("renderer"),
             gpu = o.optString("gpu"),
             verdict = o.optString("verdict").takeIf { it.isNotEmpty() },
+            sameScene = o.optBoolean("sameScene", true),
             runs = (0 until runs.length()).mapNotNull { i ->
                 val u = runs.optJSONObject(i) ?: return@mapNotNull null
                 Run(

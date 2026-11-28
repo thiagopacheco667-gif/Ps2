@@ -54,7 +54,7 @@ object NexusSystemInfo {
     fun coreLogLines(): List<String> = runCatching {
         val pid = android.os.Process.myPid()
         val p = ProcessBuilder("logcat", "-d", "-v", "brief", "--pid=$pid").redirectErrorStream(true).start()
-        val keys = listOf("framebuffer_fetch", "dualSrc", "Affinity mode", "Prime core", "ADPF", "device rules", "Vulkan driver", "GL_RENDERER")
+        val keys = listOf("ANDROID_SAVESTATE_PATH", "ANDROID_LOADSTATE", "framebuffer_fetch", "dualSrc", "Affinity mode", "Prime core", "ADPF", "device rules", "Vulkan driver", "GL_RENDERER")
         val found = LinkedHashMap<String, String>()
         p.inputStream.bufferedReader().useLines { lines ->
             lines.forEach { line ->
