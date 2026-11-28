@@ -162,6 +162,10 @@ fun str(key: String): String {
 private val BASE_EN: Map<String, String> = mapOf(
     // --- Nexus2 ---
     "nexus.touch.compact" to "Compact",
+    "nexus.game.sessions" to "Sessions",
+    "nexus.home.ov.games" to "games",
+    "nexus.home.ov.time" to "played",
+    "nexus.home.ov.sessions" to "sessions",
     "nexus.ach.unsupported" to "Unsupported version (no reliable data)",
     "nexus.game.completion" to "Campaign completion",
     "nexus.game.completion.unverified" to "Not verified",

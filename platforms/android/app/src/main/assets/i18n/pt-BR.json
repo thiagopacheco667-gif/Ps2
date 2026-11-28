@@ -1,5 +1,9 @@
 {
  "nexus.touch.compact": "Compacto",
+ "nexus.game.sessions": "Sessões",
+ "nexus.home.ov.games": "jogos",
+ "nexus.home.ov.time": "jogados",
+ "nexus.home.ov.sessions": "sessões",
  "nexus.ach.unsupported": "Versão não suportada (sem dados confiáveis)",
  "nexus.game.completion": "Conclusão da campanha",
  "nexus.game.completion.unverified": "Não verificada",

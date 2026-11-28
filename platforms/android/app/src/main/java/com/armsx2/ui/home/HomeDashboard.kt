@@ -30,6 +30,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
@@ -84,6 +85,7 @@ fun HomeDashboard(viewModel: HomeViewModel = viewModel()) {
     LaunchedEffect(Unit) {
         com.armsx2.perf.NexusBenchmark.recoverIfInterrupted()
         com.armsx2.PlayTime.migrateWarningAchievements()
+        com.armsx2.PlayTime.recoverPending()
     }
     // Nexus2: if the app closed on an error last time, show the report once (with Copy).
     LastCrashDialog()
@@ -107,6 +109,9 @@ fun HomeDashboard(viewModel: HomeViewModel = viewModel()) {
                 if (state.initialized) EmptyHero(libraryEmpty = shown.isEmpty(), Modifier.focusRequester(firstFocus))
             }
 
+            // Nexus2: one line of real totals (library size, time played, sessions).
+            if (state.initialized && shown.isNotEmpty()) OverviewStrip(shown)
+
             val moreRecents = recents.drop(1)
             // Nexus2: Settings → App → "Recent games on Home" hides this row (Home only; the
             // Continue hero and the history itself stay).
@@ -119,6 +124,9 @@ fun HomeDashboard(viewModel: HomeViewModel = viewModel()) {
 
             // Nexus2: RetroAchievements account, progress per game and the latest unlocks.
             if (state.initialized) HomeAchievementsSection(shown, forceEn)
+
+            // Last sessions (from PlayTime's session log), three at most.
+            if (state.initialized) RecentSessions(shown, forceEn)
 
             // Compact and collapsible: technical detail lives in Settings → Diagnostics / Nexus Performance.
             SystemStatus(state, shown.size)
@@ -344,5 +352,48 @@ private fun SystemStatus(state: HomeUiState, gameCount: Int) {
                 NexusRow(str("nexus.home.lastCheck"), value = PlayTime.formatLastPlayed(lastScan))
             }
         }
+    }
+}
+
+
+/** Games in the library, total time played across them, and sessions recorded. Real figures only. */
+@Composable
+private fun OverviewStrip(games: List<GameInfo>) {
+    val colors = MaterialTheme.colorScheme
+    PlayTime.revision.value
+    val totalSecs = games.sumOf { PlayTime.playedSeconds(it.serial) }
+    val sessions = games.sumOf { PlayTime.sessionCount(it.serial) }
+    Row(
+        Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 22.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        @Composable
+        fun Item(value: String, label: String, modifier: Modifier) = Column(modifier) {
+            Text(value, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = colors.onBackground, maxLines = 1)
+            Text(label, fontSize = 12.sp, color = colors.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        Item(games.size.toString(), str("nexus.home.ov.games"), Modifier.weight(1f))
+        Item(PlayTime.formatPlayed(totalSecs).ifEmpty { "0m" }, str("nexus.home.ov.time"), Modifier.weight(1f))
+        Item(if (sessions > 0) sessions.toString() else "—", str("nexus.home.ov.sessions"), Modifier.weight(1f))
+    }
+}
+
+/** The last three play sessions: game, how long, when. */
+@Composable
+private fun RecentSessions(games: List<GameInfo>, forceEn: Boolean) {
+    PlayTime.revision.value
+    val list = remember(PlayTime.revision.value) { PlayTime.sessions().takeLast(3).reversed() }
+    if (list.isEmpty()) return
+    NexusSectionHeader(str("nexus.home.activity"))
+    list.forEachIndexed { i, sn ->
+        if (i > 0) NexusDivider()
+        val g = games.firstOrNull { it.serial.equals(sn.serial, ignoreCase = true) }
+        NexusRow(
+            g?.displayTitle(forceEn) ?: sn.serial,
+            description = PlayTime.formatLastPlayed(sn.startWall),
+            value = PlayTime.formatPlayed(sn.seconds).ifEmpty { "<1m" },
+            chevron = g != null,
+            onClick = g?.let { game -> { UiNavigator.openFrom(AppRoute.GameDetail(game)) } },
+        )
     }
 }
