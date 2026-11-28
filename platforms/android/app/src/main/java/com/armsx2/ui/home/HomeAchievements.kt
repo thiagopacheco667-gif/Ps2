@@ -125,15 +125,17 @@ internal fun HomeAchievementsSection(games: List<GameInfo>, forceEn: Boolean) {
 
     AccountLine(acc)
     if (progress.isNotEmpty()) {
+        // One line of three figures instead of three cards: achievements unlocked (of the sets of the
+        // games played), games with a set, and games completed — different things, labelled so.
         Row(
-            Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
         ) {
             Stat(str("nexus.ach.unlocked"), "$unlocked/$total", Modifier.weight(1f))
             Stat(str("nexus.ach.games"), progress.size.toString(), Modifier.weight(1f))
             Stat(str("nexus.ach.mastered"), mastered.toString(), Modifier.weight(1f))
         }
-        progress.take(4).forEachIndexed { i, (game, p) ->
+        progress.take(2).forEachIndexed { i, (game, p) ->
             if (i > 0) NexusDivider(inset = 72.dp)
             GameProgressRow(game, p, forceEn)
         }
@@ -185,7 +187,9 @@ private fun AccountLine(acc: RaAccount) {
             Text(acc.user, fontSize = 17.sp, fontWeight = FontWeight.Bold, color = colors.onBackground, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text("RetroAchievements", fontSize = 13.sp, color = colors.onSurfaceVariant)
         }
-        if (acc.score >= 0) Column(horizontalAlignment = Alignment.End) {
+        // Hardcore points, plus softcore when there are any. Nothing when the account has none
+        // recorded yet (no game run since sign-in), rather than a "0" that may not be true.
+        if (acc.score > 0 || acc.softScore > 0) Column(horizontalAlignment = Alignment.End) {
             Text(
                 str("nexus.ach.points").replace("{n}", acc.score.toString()),
                 fontSize = 15.sp,
@@ -204,7 +208,7 @@ private fun AccountLine(acc: RaAccount) {
 @Composable
 private fun Stat(label: String, value: String, modifier: Modifier) {
     val colors = MaterialTheme.colorScheme
-    Column(modifier.clip(RoundedCornerShape(14.dp)).background(colors.surface).padding(horizontal = 12.dp, vertical = 10.dp)) {
+    Column(modifier) {
         Text(value, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = colors.onSurface, maxLines = 1)
         Text(label, fontSize = 12.sp, color = colors.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }

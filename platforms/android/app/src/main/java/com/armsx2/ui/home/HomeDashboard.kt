@@ -30,11 +30,13 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -113,10 +115,8 @@ fun HomeDashboard(viewModel: HomeViewModel = viewModel()) {
             // Nexus2: RetroAchievements account, progress per game and the latest unlocks.
             if (state.initialized) HomeAchievementsSection(shown, forceEn)
 
-            NexusSectionHeader(str("nexus.home.system"))
+            // Compact and collapsible: technical detail lives in Settings → Diagnostics / Nexus Performance.
             SystemStatus(state, shown.size)
-
-            RecentActivity(recents, forceEn)
         }
     }
 }
@@ -152,6 +152,20 @@ private fun ContinueHero(game: GameInfo, forceEn: Boolean, viewModel: HomeViewMo
     val colors = MaterialTheme.colorScheme
     val played = PlayTime.formatPlayed(PlayTime.playedSeconds(game.serial))
     val lastSession = PlayTime.formatLastPlayed(PlayTime.lastPlayedMillis(game.serial))
+    // "Recent activity" folded in here: the same game's last session and, when there is one, its last
+    // save (states and the core's own autosave), from the save catalogue — one place, one source.
+    val context = LocalContext.current
+    val lastSave by produceState(0L, game.uri, PlayTime.revision.value) {
+        value = withContext(Dispatchers.IO) {
+            runCatching {
+                com.armsx2.ui.saves.SaveCatalog.scan(context)
+                    .filter { !it.isBackup && it.serial.equals(game.serial, ignoreCase = true) }
+                    .maxOfOrNull { it.modified } ?: 0L
+            }.getOrDefault(0L)
+        }
+    }
+    val running = MainActivityRuntime.currentGame.value?.uri == game.uri &&
+        (MainActivityRuntime.eState.value == com.armsx2.EmuState.RUNNING || MainActivityRuntime.eState.value == com.armsx2.EmuState.PAUSED)
     // The art is already the screen's background; the hero only lays out on top of it.
     NexusGameBackdrop(game, Modifier.fillMaxWidth(), art = false) {
         Column {
@@ -185,24 +199,30 @@ private fun ContinueHero(game: GameInfo, forceEn: Boolean, viewModel: HomeViewMo
                         overflow = TextOverflow.Ellipsis,
                         color = colors.onBackground,
                     )
-                    Spacer(Modifier.height(10.dp))
+                    Text("PlayStation 2", fontSize = 13.sp, color = colors.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp))
+                    Spacer(Modifier.height(8.dp))
                     if (lastSession.isNotEmpty()) {
                         Text(str("nexus.home.lastSession").replace("{date}", lastSession), fontSize = 14.sp, color = colors.onSurfaceVariant)
                     }
                     if (played.isNotEmpty()) {
                         Text(str("nexus.home.timePlayed").replace("{time}", played), fontSize = 14.sp, color = colors.onSurfaceVariant)
                     }
+                    if (lastSave > 0L) {
+                        Text(str("nexus.home.lastSaveAt").replace("{date}", PlayTime.formatLastPlayed(lastSave)), fontSize = 14.sp, color = colors.onSurfaceVariant)
+                    }
                     Spacer(Modifier.height(10.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        if (running) NexusChip(str("nexus.home.running"))
                         game.region?.let { NexusChip(it) }
                         NexusCompatChip(game.compatibility)
                     }
                 }
             }
             NexusPrimaryButton(
-                str("nexus.home.continueButton"),
+                str(if (running) "nexus.home.backToGame" else "nexus.home.continueButton"),
                 playModifier.padding(start = 20.dp, end = 20.dp, top = 20.dp, bottom = 8.dp),
-                onClick = onPlay,
+                // Already running (Home opened over the game): go back to it instead of rebooting it.
+                onClick = { if (running) com.armsx2.ui.WindowImpl.showLibrary.value = false else onPlay() },
             )
         }
     }
@@ -254,96 +274,70 @@ private fun RecentRow(games: List<GameInfo>, forceEn: Boolean) {
                 )
             }
         }
-        item(key = "all") {
-            val shape = RoundedCornerShape(14.dp)
-            Box(
-                Modifier.width(112.dp).aspectRatio(0.7f).padFocusRing(shape).clip(shape).background(colors.surface)
-                    .clickable { UiNavigator.selectTab(MainTab.Library) },
-                contentAlignment = Alignment.Center,
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(painterResource(R.drawable.ic_nx_chevron), contentDescription = null, tint = colors.primary, modifier = Modifier.size(26.dp))
-                    Spacer(Modifier.height(8.dp))
-                    Text(str("nexus.home.all"), fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = colors.onSurface)
-                }
-            }
-        }
     }
 }
 
-/** Compact lines, no cards: BIOS, games, library state, last check. */
+/** One status line (BIOS · games), expandable to the four real figures. */
 @Composable
 private fun SystemStatus(state: HomeUiState, gameCount: Int) {
+    val colors = MaterialTheme.colorScheme
     val biosPath = MainActivityRuntime.bios.value
     val biosOk = biosPath?.let { File(it).isFile } == true
     val lastScan = runCatching { MainActivityRuntime.prefs.getLong("nexus.library.lastScanAt", 0L) }.getOrDefault(0L)
-    NexusRow(
-        str("nexus.home.bios"),
-        value = str(if (biosOk) "nexus.home.bios.configured" else "nexus.home.bios.missing"),
-        valueColor = if (biosOk) null else NexusColors.Warn,
-        chevron = true,
-        onClick = { UiNavigator.openFrom(AppRoute.BiosManager()) },
-    )
-    NexusDivider()
-    NexusRow(
-        str("nexus.home.libraryGames"),
-        value = str("nexus.home.library.count").replace("{n}", gameCount.toString()),
-        chevron = true,
-        onClick = { UiNavigator.selectTab(MainTab.Library) },
-    )
-    NexusDivider()
-    NexusRow(
-        str("nexus.home.libraryState"),
-        value = str(
-            when {
-                state.scanning -> "nexus.home.library.scanning"
-                state.duplicateCount > 0 -> "nexus.home.library.hasDups"
-                else -> "nexus.home.library.ok"
-            },
-        ).replace("{n}", state.duplicateCount.toString()),
-    )
-    if (lastScan > 0L) {
-        NexusDivider()
-        NexusRow(str("nexus.home.lastCheck"), value = PlayTime.formatLastPlayed(lastScan))
+    var open by androidx.compose.runtime.saveable.rememberSaveable { androidx.compose.runtime.mutableStateOf(false) }
+    val attention = !biosOk || state.duplicateCount > 0
+    val shape = RoundedCornerShape(14.dp)
+    Row(
+        Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, top = 24.dp).padFocusRing(shape).clip(shape)
+            .clickable { open = !open }.padding(horizontal = 12.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(10.dp).clip(RoundedCornerShape(5.dp)).background(if (attention) NexusColors.Warn else NexusColors.Ok))
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(str(if (attention) "nexus.home.sys.attention" else "nexus.home.sys.ok"), fontSize = 17.sp, fontWeight = FontWeight.Bold, color = colors.onBackground)
+            Text(
+                str(if (biosOk) "nexus.home.sys.bios.ok" else "nexus.home.sys.bios.missing") + " · " +
+                    str("nexus.home.library.count").replace("{n}", gameCount.toString()),
+                fontSize = 13.sp, color = colors.onSurfaceVariant,
+            )
+        }
+        Icon(
+            painterResource(R.drawable.ic_nx_chevron), contentDescription = null, tint = colors.onSurfaceVariant,
+            modifier = Modifier.size(18.dp).graphicsLayer { rotationZ = if (open) 270f else 90f },
+        )
     }
-}
-
-/** Last save, last game started, last activity, only from real records. */
-@Composable
-private fun RecentActivity(recents: List<GameInfo>, forceEn: Boolean) {
-    val context = LocalContext.current
-    val lastSave by produceState<com.armsx2.ui.saves.SaveEntry?>(initialValue = null, recents.firstOrNull()?.uri) {
-        value = withContext(Dispatchers.IO) {
-            runCatching {
-                com.armsx2.ui.saves.SaveCatalog.scan(context).filter { !it.isBackup }.maxByOrNull { it.modified }
-            }.getOrNull()
+    androidx.compose.animation.AnimatedVisibility(open) {
+        Column {
+            NexusRow(
+                str("nexus.home.bios"),
+                value = str(if (biosOk) "nexus.home.bios.configured" else "nexus.home.bios.missing"),
+                valueColor = if (biosOk) null else NexusColors.Warn,
+                chevron = true,
+                onClick = { UiNavigator.openFrom(AppRoute.BiosManager()) },
+            )
+            NexusDivider()
+            NexusRow(
+                str("nexus.home.libraryGames"),
+                value = str("nexus.home.library.count").replace("{n}", gameCount.toString()),
+                chevron = true,
+                onClick = { UiNavigator.selectTab(MainTab.Library) },
+            )
+            NexusDivider()
+            NexusRow(
+                str("nexus.home.libraryState"),
+                value = str(
+                    when {
+                        state.scanning -> "nexus.home.library.scanning"
+                        state.duplicateCount > 0 -> "nexus.home.library.hasDups"
+                        else -> "nexus.home.library.ok"
+                    },
+                ).replace("{n}", state.duplicateCount.toString()),
+            )
+            if (lastScan > 0L) {
+                NexusDivider()
+                NexusRow(str("nexus.home.lastCheck"), value = PlayTime.formatLastPlayed(lastScan))
+            }
         }
     }
-    val lastGame = recents.firstOrNull()
-    val lastPlayedAt = lastGame?.let { PlayTime.lastPlayedMillis(it.serial) } ?: 0L
-    val save = lastSave
-    val saveAt = save?.modified ?: 0L
-    if (lastPlayedAt <= 0L && save == null) return
-    NexusSectionHeader(str("nexus.home.activity"))
-    if (save != null) {
-        val title = recents.firstOrNull { it.serial.equals(save.serial, ignoreCase = true) }?.displayTitle(forceEn) ?: save.serial
-        NexusRow(
-            str("nexus.home.lastSave"),
-            description = title,
-            value = PlayTime.formatLastPlayed(save.modified),
-            chevron = true,
-            onClick = { UiNavigator.openFrom(AppRoute.SaveManager(focusSerial = save.serial)) },
-        )
-        NexusDivider()
-    }
-    if (lastGame != null && lastPlayedAt > 0L) {
-        NexusRow(
-            str("nexus.home.lastStarted"),
-            description = lastGame.displayTitle(forceEn),
-            value = PlayTime.formatLastPlayed(lastPlayedAt),
-        )
-        NexusDivider()
-    }
-    val latest = maxOf(lastPlayedAt, saveAt)
-    if (latest > 0L) NexusRow(str("nexus.home.lastActivity"), value = PlayTime.formatLastPlayed(latest))
 }
