@@ -1263,6 +1263,22 @@ object TouchControls {
         persist()
     }
 
+    /**
+     * Nexus2 "Compact" preset: the default arrangement for this orientation, 18% smaller and drawn
+     * toward the outer edges and the bottom, so more of the picture stays clear. Same buttons and
+     * mappings; like Reset, it only becomes the saved layout when the editor's Save is pressed.
+     */
+    fun applyCompactPreset() {
+        val base = TouchLayout.defaultFor(portrait.value)
+        fun pullX(x: Float) = if (x < 0.5f) x * 0.86f else 1f - (1f - x) * 0.86f
+        activeLayout.value = base.copy(
+            buttons = base.buttons.map { b ->
+                if (b.id == TouchButtonId.PAUSE || b.id == TouchButtonId.FAST_FORWARD) b
+                else b.copy(xFrac = pullX(b.xFrac), yFrac = 1f - (1f - b.yFrac) * 0.92f, sizeDp = b.sizeDp * 0.82f)
+            },
+        )
+    }
+
     fun resetActiveToDefault() {
         // Per-orientation: resetting in portrait must not hand back the landscape arrangement,
         // whose fractions put the sticks and face buttons over the picture.

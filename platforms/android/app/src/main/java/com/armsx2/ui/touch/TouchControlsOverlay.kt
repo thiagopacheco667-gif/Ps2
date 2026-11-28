@@ -2726,6 +2726,8 @@ private fun EditToolbar(modifier: Modifier = Modifier) {
                 // the last-played game's per-serial layout.
                 TouchControls.clearGameLayoutIfRunning()
             }
+            // Nexus2: the other built-in preset (Reset above = Classic).
+            ToolbarChip(str("nexus.touch.compact")) { TouchControls.applyCompactPreset() }
             ToolbarChip(str("touch.editor.profiles")) { TouchControls.profileDialogOpen.value = true }
             ToolbarChip(if (TouchControls.faceMultiTouch.value) str("touch.editor.multiTouchOn") else str("touch.editor.multiTouchOff")) {
                 TouchControls.setFaceMultiTouch(!TouchControls.faceMultiTouch.value)
