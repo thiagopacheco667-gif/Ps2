@@ -182,7 +182,13 @@ object NexusBenchmark {
         val original: Settings = InGameOverlay.settingsState.value
         val originalScope = InGameOverlay.settingsScope.value
         val originalOverrides = ConfigStore.loadOverrides(serial)?.toString()
-        val stateFile = File(context.cacheDir, "nexus_bench.p2s")
+        // The core only loads a state whose FILE NAME is this game's slot name ("SERIAL (CRC).NN.p2s");
+        // the folder is free. So: the slot-99 name, in a private folder, never the user's slots.
+        val stateFile = run {
+            val s = runCatching { NativeApp.getGameSerial() }.getOrNull().orEmpty().ifBlank { serial }
+            val crc = runCatching { NativeApp.getGameCRC() }.getOrNull().orEmpty()
+            File(File(context.cacheDir, "nexus_bench").apply { mkdirs() }, "$s ($crc).99.p2s")
+        }
 
         val configs: List<Triple<String, String, Settings>> = when (kind) {
             Kind.Sustained -> listOf(Triple("bench.cfg.original", describe(original), original))
@@ -221,8 +227,10 @@ object NexusBenchmark {
 
             configs.forEachIndexed { index, (label, detail, settings) ->
                 if (index > 0 || kind == Kind.Compare) apply(settings)
-                if (kind == Kind.Compare && sameScene) {
-                    if (!loadState(stateFile)) throw Abort("load")
+                if (kind == Kind.Compare && sameScene && !loadState(stateFile)) {
+                    // Refused (e.g. the disc CRC differs from the running ELF's): go on without the
+                    // scene reset, and say the runs are not comparable rather than stopping.
+                    sameScene = false
                 }
                 awaitRunning()
                 if (kind == Kind.Sustained) {
@@ -239,7 +247,7 @@ object NexusBenchmark {
                 runCatching { restoreOverrides(serial, originalOverrides) }
                 InGameOverlay.settingsScope.value = originalScope
                 runCatching { MainActivityRuntime.prefs.edit().remove(PREF_RECOVERY).apply() }
-                if (kind == Kind.Compare && stateFile.isFile) runCatching { loadState(stateFile) }
+                if (kind == Kind.Compare && sameScene && stateFile.isFile) runCatching { loadState(stateFile) }
                 runCatching { stateFile.delete() }
             }
         }
