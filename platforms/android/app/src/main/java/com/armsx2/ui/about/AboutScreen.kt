@@ -45,6 +45,7 @@ import com.armsx2.ui.settings.controllerFocusable
 
 private const val RepositoryUrl = "https://github.com/ARMSX2/ARMSX2"
 private const val Pcsx2RepositoryUrl = "https://github.com/PCSX2/pcsx2"
+private const val NexusSourceUrl = "https://github.com/thiagopacheco667-gif/Ps2"
 
 @Composable
 fun AboutScreen(onBack: () -> Unit, viewModel: AboutViewModel = viewModel()) {
@@ -119,6 +120,27 @@ fun AboutScreen(onBack: () -> Unit, viewModel: AboutViewModel = viewModel()) {
                             }
                             hardware(Modifier.fillMaxWidth())
                         }
+                        // Nexus2: what this app is, what it is built on, and that it is independent.
+                        GlassPanel(Modifier.fillMaxWidth()) {
+                            Column {
+                                PanelTitle(str("nexus.about.title"))
+                                Text(str("nexus.about.body"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Spacer(Modifier.height(12.dp))
+                                InfoRow(str("nexus.about.engine"), str("nexus.about.engine.value"))
+                                InfoRow(str("nexus.about.origin"), str("nexus.about.origin.value"))
+                                Spacer(Modifier.height(12.dp))
+                                Text(str("nexus.about.independent"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                        // GPL-3.0: the corresponding source of this build (engine changes and the app) is public.
+                        ProjectCard(
+                            title = str("nexus.about.source.title"),
+                            repository = "thiagopacheco667-gif/Ps2",
+                            description = str("nexus.about.source.desc"),
+                            glyph = "N",
+                            controllerId = "about.nexusSource",
+                            onOpen = { uriHandler.openUri(NexusSourceUrl) },
+                        )
                         if (compact) {
                             ProjectCard(
                                 title = str("about.repository.title"),
@@ -162,6 +184,7 @@ fun AboutScreen(onBack: () -> Unit, viewModel: AboutViewModel = viewModel()) {
                         }
                         // The GPL asks for ARMSX2's own license in the app (copyright, no warranty, where to
                         // read it), and the libraries' licenses ask for their notices to come with it.
+                        PanelTitle(str("nexus.about.licenses"))
                         val license: @Composable (Modifier) -> Unit = { cardModifier ->
                             ProjectCard(
                                 title = str("about.license.title"),

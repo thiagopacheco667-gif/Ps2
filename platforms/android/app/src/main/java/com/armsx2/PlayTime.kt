@@ -29,6 +29,83 @@ object PlayTime {
 
     private var sessionSerial: String? = null
     private var sessionStart: Long = 0L
+    private var sessionStartWall: Long = 0L
+
+    // ---- Nexus2: session history ---------------------------------------------------------------
+    // A running segment ends at every pause (time only counts while the VM runs, as before). For
+    // the history, segments of the same game less than [MERGE_GAP_MS] apart are one session, so
+    // pausing for the menu does not split a play session. The log keeps the last [LOG_MAX]
+    // sessions; the per-game session count is kept separately so it survives the cap.
+    private const val LOG_KEY = "nexus.sessions.log"
+    private const val COUNT_PREFIX = "nexus.sessions.count."
+    private const val PENDING_KEY = "nexus.sessions.pending"
+    private const val LOG_MAX = 200
+    private const val MERGE_GAP_MS = 10L * 60 * 1000
+    private const val CHECKPOINT_MS = 60_000L
+
+    data class Session(val serial: String, val startWall: Long, val endWall: Long, val seconds: Long)
+
+    fun sessions(): List<Session> = runCatching {
+        val arr = org.json.JSONArray(MainActivityRuntime.prefs.getString(LOG_KEY, "[]"))
+        (0 until arr.length()).mapNotNull { i ->
+            arr.optJSONObject(i)?.let { Session(it.optString("s"), it.optLong("a"), it.optLong("b"), it.optLong("t")) }
+        }
+    }.getOrDefault(emptyList())
+
+    fun sessionCount(serial: String?): Int =
+        serial?.takeIf { it.isNotEmpty() }?.let { runCatching { MainActivityRuntime.prefs.getInt(COUNT_PREFIX + it, 0) }.getOrDefault(0) } ?: 0
+
+    private fun logSegment(serial: String, startWall: Long, endWall: Long, seconds: Long) {
+        val prefs = MainActivityRuntime.prefs
+        val arr = runCatching { org.json.JSONArray(prefs.getString(LOG_KEY, "[]")) }.getOrDefault(org.json.JSONArray())
+        val last = if (arr.length() > 0) arr.optJSONObject(arr.length() - 1) else null
+        val e = prefs.edit()
+        if (last != null && last.optString("s") == serial && startWall - last.optLong("b") in 0..MERGE_GAP_MS) {
+            last.put("b", endWall).put("t", last.optLong("t") + seconds)
+        } else {
+            arr.put(org.json.JSONObject().put("s", serial).put("a", startWall).put("b", endWall).put("t", seconds))
+            e.putInt(COUNT_PREFIX + serial, prefs.getInt(COUNT_PREFIX + serial, 0) + 1)
+        }
+        val trimmed = org.json.JSONArray()
+        for (i in maxOf(0, arr.length() - LOG_MAX) until arr.length()) trimmed.put(arr.get(i))
+        e.putString(LOG_KEY, trimmed.toString()).apply()
+    }
+
+    /** While a segment runs, its progress is written once a minute, so a crash or a killed app
+     *  loses at most a minute instead of the whole session. [recoverPending] adds it back. */
+    private val checkpointHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val checkpoint = object : Runnable {
+        override fun run() {
+            synchronized(this@PlayTime) {
+                val s = sessionSerial ?: return
+                val secs = (SystemClock.elapsedRealtime() - sessionStart) / 1000L
+                runCatching {
+                    MainActivityRuntime.prefs.edit().putString(
+                        PENDING_KEY,
+                        org.json.JSONObject().put("s", s).put("a", sessionStartWall).put("t", secs).toString(),
+                    ).apply()
+                }
+            }
+            checkpointHandler.postDelayed(this, CHECKPOINT_MS)
+        }
+    }
+
+    /** A segment the app did not get to close (killed, crashed): count what its last checkpoint saw. */
+    @Synchronized
+    fun recoverPending() {
+        val prefs = runCatching { MainActivityRuntime.prefs }.getOrNull() ?: return
+        val raw = prefs.getString(PENDING_KEY, null) ?: return
+        prefs.edit().remove(PENDING_KEY).apply()
+        if (sessionSerial != null) return
+        runCatching {
+            val o = org.json.JSONObject(raw)
+            val s = o.getString("s"); val a = o.getLong("a"); val t = o.getLong("t")
+            if (t <= 0L) return
+            prefs.edit().putLong(SECS_PREFIX + s, prefs.getLong(SECS_PREFIX + s, 0L) + t).apply()
+            logSegment(s, a, a + t * 1000L, t)
+            bumpRevision()
+        }
+    }
 
     /** Bumped whenever a stored total changes. The library reads these figures inside `remember`,
      *  which would otherwise keep showing the value from before the session — play a game for an
@@ -49,6 +126,9 @@ object PlayTime {
         val s = serial?.takeIf { it.isNotEmpty() } ?: return
         sessionSerial = s
         sessionStart = SystemClock.elapsedRealtime()
+        sessionStartWall = System.currentTimeMillis()
+        checkpointHandler.removeCallbacks(checkpoint)
+        checkpointHandler.postDelayed(checkpoint, CHECKPOINT_MS)
         MainActivityRuntime.prefs.edit().putLong(LAST_PREFIX + s, System.currentTimeMillis()).apply()
     }
 
@@ -57,10 +137,13 @@ object PlayTime {
     fun endSession() {
         val s = sessionSerial ?: return
         sessionSerial = null
+        checkpointHandler.removeCallbacks(checkpoint)
+        runCatching { MainActivityRuntime.prefs.edit().remove(PENDING_KEY).apply() }
         val elapsedMs = SystemClock.elapsedRealtime() - sessionStart
         if (elapsedMs < 1000L) return
         val prev = MainActivityRuntime.prefs.getLong(SECS_PREFIX + s, 0L)
         MainActivityRuntime.prefs.edit().putLong(SECS_PREFIX + s, prev + elapsedMs / 1000L).apply()
+        runCatching { logSegment(s, sessionStartWall, System.currentTimeMillis(), elapsedMs / 1000L) }
         bumpRevision()
     }
 

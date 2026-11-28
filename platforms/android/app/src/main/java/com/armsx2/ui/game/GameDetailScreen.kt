@@ -167,6 +167,11 @@ fun GameDetailScreen(game: GameInfo, onBack: () -> Unit, viewModel: HomeViewMode
             NexusRow(str("nexus.game.playTime"), value = played.ifEmpty { str("nexus.game.never") })
             NexusDivider()
             NexusRow(str("nexus.game.lastPlayed"), value = last.ifEmpty { str("nexus.game.never") })
+            val sessions = PlayTime.sessionCount(game.serial)
+            if (sessions > 0) {
+                NexusDivider()
+                NexusRow(str("nexus.game.sessions"), value = sessions.toString())
+            }
             compatLabelKey(game.compatibility)?.let { key ->
                 NexusDivider()
                 NexusRow(str("nexus.game.compat"), value = str(key))
