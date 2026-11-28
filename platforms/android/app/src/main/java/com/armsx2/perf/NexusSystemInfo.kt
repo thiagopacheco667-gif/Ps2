@@ -56,10 +56,11 @@ object NexusSystemInfo {
         val p = ProcessBuilder("logcat", "-d", "-v", "brief", "--pid=$pid").redirectErrorStream(true).start()
         val keys = listOf("ANDROID_SAVESTATE_PATH", "ANDROID_LOADSTATE", "framebuffer_fetch", "dualSrc", "Affinity mode", "Prime core", "ADPF", "device rules", "Vulkan driver", "GL_RENDERER")
         val found = LinkedHashMap<String, String>()
+        val prefix = Regex("""^\S/[^(]*\(\s*\d+\):\s?""")
         p.inputStream.bufferedReader().useLines { lines ->
             lines.forEach { line ->
                 val k = keys.firstOrNull { line.contains(it, ignoreCase = true) } ?: return@forEach
-                found[k] = line.substringAfter("): ").trim().take(220)
+                found[k] = line.replace(prefix, "").trim()
             }
         }
         p.waitFor()

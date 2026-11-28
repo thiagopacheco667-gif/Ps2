@@ -103,6 +103,8 @@ fun NexusPerformanceScreen(onBack: () -> Unit) {
                 ),
             )
 
+            if (NexusDeviceDefaultsCardVisible(i?.gpu)) DeviceDefaultsCard()
+
             LiveGroup()
 
             Section(str("bench.run.title"))
@@ -151,7 +153,7 @@ private fun LiveGroup() {
     if (!running) return
     var rows by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
     val na = str("bench.na")
-    val kSpeed = str("bench.m.speed"); val kFps = str("bench.m.fps"); val kVps = str("bench.m.vps")
+    val kSpeed = str("bench.m.speed"); val kFps = str("bench.m.vsync"); val kVps = str("bench.m.gameFps")
     val kFt = str("bench.m.frametime"); val kTemp = str("bench.m.temp"); val kTherm = str("bench.m.thermal")
     val thermalNames = listOf(str("bench.th.0"), str("bench.th.1"), str("bench.th.2"), str("bench.th.3"), str("bench.th.4"), str("bench.th.5"), str("bench.th.6"))
     LaunchedEffect(Unit) {
@@ -160,8 +162,8 @@ private fun LiveGroup() {
             fun f(v: Float?, unit: String, d: Int = 1) = v?.takeIf { it > 0f && it.isFinite() }?.let { String.format(Locale.US, "%.${d}f", it) + unit } ?: na
             rows = listOf(
                 kSpeed to f(runCatching { kr.co.iefriends.pcsx2.NativeApp.getEmuSpeedPercent() }.getOrNull(), "%", 0),
-                kFps to f(runCatching { kr.co.iefriends.pcsx2.NativeApp.getFPS() }.getOrNull(), ""),
                 kVps to f(runCatching { kr.co.iefriends.pcsx2.NativeApp.getVPS() }.getOrNull(), ""),
+                kFps to f(runCatching { kr.co.iefriends.pcsx2.NativeApp.getFPS() }.getOrNull(), ""),
                 kFt to f(runCatching { kr.co.iefriends.pcsx2.NativeApp.getAverageFrameTime() }.getOrNull(), " ms", 2),
                 kTemp to (com.armsx2.Thermals.format(com.armsx2.Thermals.cpu)?.let { "CPU $it" } ?: na),
                 kTherm to (NexusBenchmark.thermalStatus(context)?.let { thermalNames.getOrElse(it) { it.toString() } } ?: na),
@@ -182,9 +184,24 @@ private fun ResultCard(r: NexusBenchmark.Result) {
     Card {
         Text(r.title, fontSize = 16.sp, fontWeight = FontWeight.Bold, color = colors.onSurface)
         Text(
-            str(if (r.kind == NexusBenchmark.Kind.Sustained) "bench.kind.sustained" else "bench.kind.compare") + " · " + date + " · " + r.renderer,
+            str(when (r.kind) {
+                NexusBenchmark.Kind.Sustained -> "bench.kind.sustained"
+                NexusBenchmark.Kind.Optimize -> "bench.kind.optimize"
+                else -> "bench.kind.compare"
+            }) + " · " + date + " · " + r.renderer,
             fontSize = 12.sp, color = colors.onSurfaceVariant,
         )
+        if (r.kind == NexusBenchmark.Kind.Optimize) {
+            Text(
+                r.applied?.let { str("bench.opt.appliedLine").replace("{cfg}", it) } ?: str("bench.opt.kept"),
+                fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = com.armsx2.ui.nexus.NexusColors.Ok,
+                modifier = Modifier.padding(top = 8.dp),
+            )
+            if (r.applied != null && NexusBenchmark.canUndo(r.serial)) {
+                Spacer(Modifier.height(8.dp))
+                SmallAction(str("bench.opt.undo")) { NexusBenchmark.undoOptimize(r.serial) }
+            }
+        }
         val base = r.runs.firstOrNull()
         if (!r.sameScene) Text(str("bench.notSameScene"), fontSize = 12.sp, color = com.armsx2.ui.nexus.NexusColors.Warn, modifier = Modifier.padding(top = 6.dp))
         r.runs.forEach { u ->
@@ -197,8 +214,9 @@ private fun ResultCard(r: NexusBenchmark.Result) {
             Metric(str("bench.m.speed"), f(u.speedAvg, "%", 1) + delta(u.speedAvg, base?.speedAvg))
             Metric(str("bench.m.speedMin"), f(u.speedMin, "%", 0))
             Metric(str("bench.m.below"), f(u.belowFullPct, "%", 0))
-            Metric(str("bench.m.fps"), f(u.fpsAvg, "") + delta(u.fpsAvg, base?.fpsAvg))
-            Metric(str("bench.m.vps"), f(u.vpsAvg, ""))
+            // getVPS() is the core's internal FPS (frames the game drew): the game's real frame rate.
+            Metric(str("bench.m.gameFps"), f(u.vpsAvg, "") + delta(u.vpsAvg, base?.vpsAvg))
+            Metric(str("bench.m.vsync"), f(u.fpsAvg, ""))
             Metric(str("bench.m.frametime"), f(u.frameTimeAvg, " ms", 2) + " / " + f(u.frameTimeMax, " ms", 2))
             Metric(str("bench.m.low1"), na)
             Metric(str("bench.m.cpu"), f(u.cpuAvg, "%", 0))
@@ -304,6 +322,31 @@ fun NexusBenchmarkHud() {
                     .clickable { if (p != null) NexusBenchmark.cancel() else NexusBenchmark.lastOutcome.value = null },
                 contentAlignment = Alignment.Center,
             ) { Text("✕", color = Color(0xFFF4F5FA), fontSize = 14.sp) }
+        }
+    }
+}
+
+private fun NexusDeviceDefaultsCardVisible(gpu: String?) = com.armsx2.perf.NexusDeviceDefaults.isMali(gpu)
+
+/** "MediaTek / Mali default (all games)": only what was measured — global blending at Basic. */
+@Composable
+private fun DeviceDefaultsCard() {
+    val colors = MaterialTheme.colorScheme
+    var tick by remember { mutableStateOf(0) }
+    val blend = remember(tick) { com.armsx2.perf.NexusDeviceDefaults.globalBlend() }
+    val undo = remember(tick) { com.armsx2.perf.NexusDeviceDefaults.canUndo() }
+    Section(str("bench.dev.title"))
+    Card {
+        Text(str("bench.dev.desc"), fontSize = 13.sp, lineHeight = 19.sp, color = colors.onSurfaceVariant)
+        Spacer(Modifier.height(10.dp))
+        if (blend > com.armsx2.perf.NexusDeviceDefaults.BLEND_BASIC) {
+            SmallAction(str("bench.dev.apply")) { com.armsx2.perf.NexusDeviceDefaults.apply(); tick++ }
+        } else {
+            Text(str("bench.dev.active"), fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = com.armsx2.ui.nexus.NexusColors.Ok)
+        }
+        if (undo) {
+            Spacer(Modifier.height(8.dp))
+            SmallAction(str("bench.dev.undo")) { com.armsx2.perf.NexusDeviceDefaults.undo(); tick++ }
         }
     }
 }

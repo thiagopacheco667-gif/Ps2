@@ -42,14 +42,15 @@ internal fun GraphicsProfile.applyTo(s: Settings): Settings = s.copy(
     output = s.output.copy(upscaleFloat = upscale),
     graphics = s.graphics.copy(accurateBlendingUnit = blending),
     hwFixes = s.hwFixes.copy(maxAnisotropy = anisotropy),
-    cpu = s.cpu.copy(mtvu = mtvu),
+    // Nexus2: MTVU is no longer part of a profile. Measured on the Mali-G720 it helps some games and
+    // costs others (Tony Hawk's Downhill Jam: 54 FPS off, 37 on), so it is set per game, by hand or by
+    // "Optimize this game", never by a profile.
 )
 
 internal fun GraphicsProfile.matches(s: Settings): Boolean =
     abs(s.output.upscaleFloat - upscale) < 0.01f &&
         s.graphics.accurateBlendingUnit == blending &&
-        s.hwFixes.maxAnisotropy == anisotropy &&
-        s.cpu.mtvu == mtvu
+        s.hwFixes.maxAnisotropy == anisotropy
 
 /** The settings that make the picture sharp and steady instead of smeared:
  *  - PCRTC anti-blur on (drops the half-frame offset games use to soften the image),

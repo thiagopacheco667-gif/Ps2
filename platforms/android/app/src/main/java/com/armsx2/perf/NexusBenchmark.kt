@@ -57,8 +57,9 @@ object NexusBenchmark {
     private const val PREF_RECOVERY = "nexus.bench.recovery"
     private const val PREF_RESULTS = "nexus.bench.results"
     private const val KEEP_RESULTS = 12
+    private const val PREF_UNDO = "nexus.opt.undo."
 
-    enum class Kind { Compare, Sustained }
+    enum class Kind { Compare, Sustained, Optimize }
 
     data class Progress(val kind: Kind, val step: Int, val steps: Int, val label: String, val phase: String, val remainingSec: Int)
 
@@ -110,6 +111,8 @@ object NexusBenchmark {
         /** False when the core refused a save state (e.g. a disc whose CRC reads 0): the runs then
          *  follow each other on a moving scene and are not directly comparable. */
         val sameScene: Boolean = true,
+        /** Optimize only: the settings applied to the game (null = nothing changed). */
+        val applied: String? = null,
     )
 
     fun results(): List<Result> = runCatching {
@@ -126,6 +129,28 @@ object NexusBenchmark {
 
     /** Compare the current settings with two of the Nexus2 profiles, ~1.5 min. */
     fun startCompare(context: Context) = start(context, Kind.Compare)
+
+    /** Find this game's best MTVU / blending / resolution on one scene and apply it to the game. */
+    fun startOptimize(context: Context) = start(context, Kind.Optimize)
+
+    /** Whether [serial] has an "Optimize" result that can be undone. */
+    fun canUndo(serial: String): Boolean =
+        runCatching { MainActivityRuntime.prefs.contains(PREF_UNDO + serial) }.getOrDefault(false)
+
+    /** Put back the game's settings from before "Optimize" (live if that game is running). */
+    fun undoOptimize(serial: String) {
+        val raw = runCatching { MainActivityRuntime.prefs.getString(PREF_UNDO + serial, null) }.getOrNull() ?: return
+        val json = raw.takeIf { it != "null" }
+        restoreOverrides(serial, json)
+        if (InGameOverlay.currentSerial.value == serial && MainActivityRuntime.eState.value != EmuState.STOPPED) {
+            val scope = InGameOverlay.settingsScope.value
+            runCatching { apply(ConfigStore.resolveForGame(serial)) }
+            restoreOverrides(serial, json)
+            InGameOverlay.settingsScope.value = scope
+        }
+        runCatching { MainActivityRuntime.prefs.edit().remove(PREF_UNDO + serial).apply() }
+        revision.value++
+    }
 
     /** The current settings for 10 min: first minute vs. last minute (sustained vs. initial). */
     fun startSustained(context: Context) = start(context, Kind.Sustained)
@@ -192,6 +217,7 @@ object NexusBenchmark {
 
         val configs: List<Triple<String, String, Settings>> = when (kind) {
             Kind.Sustained -> listOf(Triple("bench.cfg.original", describe(original), original))
+            Kind.Optimize -> emptyList()
             Kind.Compare -> {
                 val profiles = graphicsProfiles()
                 val balanced = profiles.first { it.labelKey == "nexus.profile.balanced" }
@@ -216,15 +242,20 @@ object NexusBenchmark {
         ).apply()
 
         val runs = mutableListOf<Run>()
-        var sameScene = kind == Kind.Compare
+        var sameScene = kind != Kind.Sustained
+        var chosen: Settings = original
         try {
             progress.value = Progress(kind, 0, configs.size, "", "state", 0)
-            if (kind == Kind.Compare) {
+            if (kind != Kind.Sustained) {
                 // No save state (the card is busy for too long, or the core cannot name a state for
                 // this disc): carry on without it, and say the scenes differ instead of comparing them.
                 if (!saveState(stateFile)) sameScene = false
             }
 
+            if (kind == Kind.Optimize) {
+                if (!sameScene) throw Abort("noScene")
+                chosen = optimize(context, original, stateFile, runs)
+            }
             configs.forEachIndexed { index, (label, detail, settings) ->
                 if (index > 0 || kind == Kind.Compare) apply(settings)
                 if (kind == Kind.Compare && sameScene && !loadState(stateFile)) {
@@ -243,15 +274,91 @@ object NexusBenchmark {
         } finally {
             withContext(kotlinx.coroutines.NonCancellable) {
                 // Original settings back, live, then the override blob exactly as it was.
-                runCatching { if (kind == Kind.Compare) apply(original) }
+                runCatching { if (kind != Kind.Sustained) apply(original) }
                 runCatching { restoreOverrides(serial, originalOverrides) }
                 InGameOverlay.settingsScope.value = originalScope
                 runCatching { MainActivityRuntime.prefs.edit().remove(PREF_RECOVERY).apply() }
-                if (kind == Kind.Compare && sameScene && stateFile.isFile) runCatching { loadState(stateFile) }
+                if (kind != Kind.Sustained && sameScene && stateFile.isFile) runCatching { loadState(stateFile) }
                 runCatching { stateFile.delete() }
             }
         }
-        store(Result(System.currentTimeMillis(), kind, game.title, serial, original.output.renderer, com.armsx2.GpuInfo.rendererName().orEmpty(), runs, verdict(kind, runs, configs.map { it.third }, sameScene), sameScene))
+        var applied: String? = null
+        if (kind == Kind.Optimize && changed(original, chosen)) {
+            // Keep the game's own overrides for "Undo", then write only the winning values for this
+            // game (inherit everything else) and apply them live.
+            MainActivityRuntime.prefs.edit().putString(PREF_UNDO + serial, originalOverrides ?: "null").apply()
+            apply(chosen)
+            InGameOverlay.settingsScope.value = originalScope
+            applied = describe(chosen)
+        }
+        val verdict = if (kind == Kind.Optimize) (if (applied != null) "bench.opt.applied" else "bench.opt.kept")
+            else verdict(kind, runs, configs.map { it.third }, sameScene)
+        store(Result(System.currentTimeMillis(), kind, game.title, serial, original.output.renderer, com.armsx2.GpuInfo.rendererName().orEmpty(), runs, verdict, sameScene, applied))
+    }
+
+    // ---- Optimize: one variable at a time --------------------------------------------------
+
+    private fun changed(a: Settings, b: Settings) =
+        a.cpu.mtvu != b.cpu.mtvu || a.graphics.accurateBlendingUnit != b.graphics.accurateBlendingUnit ||
+            kotlin.math.abs(a.output.upscaleFloat - b.output.upscaleFloat) > 0.01f
+
+    /** Full speed: average ≥98.5% and under 97% no more than 5% of the time. */
+    private fun ok(r: Run) = (r.speedAvg ?: 0f) >= 98.5f && (r.belowFullPct ?: 100f) <= 5f
+
+    /** The game's own frame rate (frames it actually drew), the number the player sees. */
+    private fun gameFps(r: Run) = r.vpsAvg ?: 0f
+
+    /** [a] is clearly better than [b]: reaches full speed where [b] did not, or ≥3% more game FPS. */
+    private fun better(a: Run, b: Run): Boolean = when {
+        ok(a) && !ok(b) -> true
+        !ok(a) && ok(b) -> false
+        !ok(a) && !ok(b) -> (a.speedAvg ?: 0f) > (b.speedAvg ?: 0f) + 2f
+        else -> gameFps(a) > gameFps(b) * 1.03f
+    }
+
+    /** [a] costs nothing visible against [b] (for a quality increase): full speed, FPS within 2%. */
+    private fun notWorse(a: Run, b: Run): Boolean =
+        ok(a) && gameFps(a) >= gameFps(b) * 0.98f &&
+            ((a.frameTimeMax ?: 0f) <= (b.frameTimeMax ?: 0f) * 1.15f || b.frameTimeMax == null)
+
+    private suspend fun optimize(context: Context, original: Settings, stateFile: File, runs: MutableList<Run>): Settings {
+        val steps = 4
+        var step = 0
+        suspend fun trial(label: String, s: Settings): Run {
+            step++
+            apply(s)
+            if (!loadState(stateFile)) throw Abort("load")
+            awaitRunning()
+            waitRunning(WARMUP_MS) { left -> progress.value = Progress(Kind.Optimize, step, steps, label, "warmup", left) }
+            return measure(context, label, describe(s), MEASURE_MS) { left -> progress.value = Progress(Kind.Optimize, step, steps, label, "measure", left) }
+                .also { runs += it }
+        }
+        var best = original
+        var bestRun = trial("bench.opt.base", original)
+
+        // 1. MTVU: helps some games, costs others (Tony Hawk's Downhill Jam: 54 → 37 FPS with it on).
+        val mtvu = best.copy(cpu = best.cpu.copy(mtvu = !best.cpu.mtvu))
+        trial("bench.opt.mtvu", mtvu).let { if (better(it, bestRun)) { best = mtvu; bestRun = it } }
+
+        // 2. Blending above Basic: Medium caused speed dips in Yakuza that Basic removed.
+        if (best.graphics.accurateBlendingUnit > 1) {
+            val basic = best.copy(graphics = best.graphics.copy(accurateBlendingUnit = 1))
+            trial("bench.opt.blend", basic).let { if (better(it, bestRun)) { best = basic; bestRun = it } }
+        } else step++
+
+        // 3. Resolution: one step up when the GPU has room, one step down when speed is short.
+        val scale = best.output.upscaleFloat
+        when {
+            ok(bestRun) && (bestRun.gpuAvg ?: 100f) < 55f && scale < 3f -> {
+                val up = best.copy(output = best.output.copy(upscaleFloat = kotlin.math.floor(scale + 1f)))
+                trial("bench.opt.resUp", up).let { if (notWorse(it, bestRun)) { best = up; bestRun = it } }
+            }
+            !ok(bestRun) && scale > 1f -> {
+                val down = best.copy(output = best.output.copy(upscaleFloat = kotlin.math.max(1f, kotlin.math.ceil(scale - 1f))))
+                trial("bench.opt.resDown", down).let { if (better(it, bestRun)) { best = down; bestRun = it } }
+            }
+        }
+        return best
     }
 
     /** The core refuses a save while the memory card is mid-write; try for a few seconds. */
@@ -393,7 +500,14 @@ object NexusBenchmark {
             if (a != null && b != null && b < a - 3f) return "bench.why.drop"
         }
         val speed = base.speedAvg ?: return "bench.why.unknown"
-        if (speed >= 97f && (base.belowFullPct ?: 100f) < 10f) return "bench.why.fullSpeed"
+        if (speed >= 97f && (base.belowFullPct ?: 100f) < 10f) {
+            val f = base.vpsAvg ?: 0f
+            return when {
+                f in 29f..31f -> "bench.why.cap30"
+                f in 24f..26f -> "bench.why.cap25"
+                else -> "bench.why.fullSpeed"
+            }
+        }
         if ((base.thermalStatusEnd ?: 0) >= PowerManager.THERMAL_STATUS_SEVERE) return "bench.why.thermal"
         if ((base.cpuAvg ?: 0f) >= 95f) return "bench.why.cpu"
         if ((base.gpuAvg ?: 0f) >= 95f || (base.gsAvg ?: 0f) >= 95f) return "bench.why.gpu"
@@ -448,7 +562,7 @@ object NexusBenchmark {
 
     private fun toJson(r: Result) = JSONObject()
         .put("at", r.at).put("kind", r.kind.name).put("title", r.title).put("serial", r.serial)
-        .put("renderer", r.renderer).put("gpu", r.gpu).put("verdict", r.verdict).put("sameScene", r.sameScene)
+        .put("renderer", r.renderer).put("gpu", r.gpu).put("verdict", r.verdict).put("sameScene", r.sameScene).apply { r.applied?.let { put("applied", it) } }
         .put("runs", JSONArray().apply {
             r.runs.forEach { u ->
                 put(JSONObject().put("label", u.label).put("detail", u.detail).put("samples", u.samples)
@@ -474,6 +588,7 @@ object NexusBenchmark {
             gpu = o.optString("gpu"),
             verdict = o.optString("verdict").takeIf { it.isNotEmpty() },
             sameScene = o.optBoolean("sameScene", true),
+            applied = o.optString("applied").takeIf { it.isNotEmpty() },
             runs = (0 until runs.length()).mapNotNull { i ->
                 val u = runs.optJSONObject(i) ?: return@mapNotNull null
                 Run(
