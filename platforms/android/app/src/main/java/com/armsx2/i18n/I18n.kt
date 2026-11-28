@@ -161,6 +161,13 @@ fun str(key: String): String {
  */
 private val BASE_EN: Map<String, String> = mapOf(
     // --- Nexus2 ---
+    "nexus.home.lastSaveAt" to "Last save · {date}",
+    "nexus.home.running" to "Running",
+    "nexus.home.backToGame" to "BACK TO GAME",
+    "nexus.home.sys.ok" to "System ready",
+    "nexus.home.sys.attention" to "System needs attention",
+    "nexus.home.sys.bios.ok" to "BIOS set",
+    "nexus.home.sys.bios.missing" to "BIOS missing",
     "bench.run.optimize" to "Optimize this game (~2 min)",
     "bench.kind.optimize" to "Optimization",
     "bench.opt.base" to "Current",
@@ -444,7 +451,7 @@ private val BASE_EN: Map<String, String> = mapOf(
     "nexus.home.search" to "Search games",
     "nexus.home.continue" to "Continue playing",
     "nexus.home.start" to "Get started",
-    "nexus.home.recent" to "Recent",
+    "nexus.home.recent" to "Recently played",
     "nexus.home.seeAll" to "See all",
     "nexus.home.favorites" to "Favourites",
     "nexus.home.favorites.empty" to "Mark games as favourite from their menu (hold a cover in Games) and they show up here.",
