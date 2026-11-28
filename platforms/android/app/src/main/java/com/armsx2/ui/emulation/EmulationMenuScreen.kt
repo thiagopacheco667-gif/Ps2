@@ -1298,6 +1298,28 @@ private fun GraphicsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
 @Composable
 private fun PerformancePane(state: EmulationMenuUiState, viewModel: EmulationMenuViewModel) {
     val settings = state.settings
+    // Nexus2: ANALISAR DESEMPENHO. Closes the menu and measures the game on the same scene
+    // (a private save state) under the current settings and two Nexus2 profiles; the game's own
+    // settings are restored afterwards. Results: Settings → Nexus Performance.
+    val benchContext = androidx.compose.ui.platform.LocalContext.current
+    SectionCard(str("bench.run.title")) {
+        Text(
+            str("bench.run.short"),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp),
+        )
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            CompactAction(str("bench.run.compare"), "▶", Modifier.weight(1f)) {
+                viewModel.resume()
+                com.armsx2.perf.NexusBenchmark.startCompare(benchContext)
+            }
+            CompactAction(str("bench.run.sustained"), "◷", Modifier.weight(1f)) {
+                viewModel.resume()
+                com.armsx2.perf.NexusBenchmark.startSustained(benchContext)
+            }
+        }
+    }
     MenuSwitchRow(str("perf.autoTune.label"), settings.emuCore.autoTune, description = str("perf.autoTune.description"), field = "autoTune") {
         viewModel.updateSettings { current -> current.copy(emuCore = current.emuCore.copy(autoTune = it)) }
     }

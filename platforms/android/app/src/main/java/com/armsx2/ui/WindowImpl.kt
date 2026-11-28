@@ -149,6 +149,8 @@ object WindowImpl {
             if (overlayVisible.value) {
                 com.armsx2.ui.emulation.EmulationMenuScreen()
             }
+            // Nexus2: progress pill while "Analisar desempenho" runs, and its outcome after.
+            com.armsx2.ui.perf.NexusBenchmarkHud()
 
             // Full manager screen over the paused game; dismiss (back or the screen's
             // own back arrow) resumes it. Same overlay pattern as All Settings.

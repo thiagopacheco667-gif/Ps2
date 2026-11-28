@@ -129,6 +129,7 @@ fun AppNavigation() {
                 AppRoute.Profile -> com.armsx2.ui.settingshub.ProfileScreen(onBack = UiNavigator::up)
                 is AppRoute.GameDetail -> com.armsx2.ui.game.GameDetailScreen(destination.game, onBack = UiNavigator::up)
                 AppRoute.Diagnostics -> com.armsx2.ui.tools.DiagnosticsScreen(onBack = UiNavigator::up)
+                AppRoute.NexusPerformance -> com.armsx2.ui.perf.NexusPerformanceScreen(onBack = UiNavigator::up)
                 is AppRoute.Settings -> SettingsScreen(
                     initialCategory = destination.category,
                     game = destination.game,

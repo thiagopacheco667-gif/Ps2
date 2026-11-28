@@ -70,3 +70,9 @@ baseado no [PCSX2](https://pcsx2.net). Importado sem modificações do commit `4
 - Não há arte de cena no repositório de capas, então a "arte" é a capa (a capa personalizada do usuário primeiro).
 - A imagem é decodificada pequena (270×400) e fica no cache de memória e disco do Coil. A única animação é um crossfade de 450 ms quando o jogo muda.
 - Removidos do caminho padrão: onda XMB (GL), onda 2D, partículas e protetores como fundo. Os arquivos continuam no código (o protetor de tela por inatividade segue existindo). Imagem de fundo própria do usuário continua tendo prioridade.
+
+## NEXUS PERFORMANCE — Fase 1 (auditoria) e medição
+
+- Auditoria (2 agentes, só leitura): CPU/ARM64 e Mali-G720. Principais achados: regra MediaTek desliga framebuffer fetch no Vulkan (palpite, só o 8300 isento); "Auto" escolhe OpenGL na G720; Mali sem dual-source faz blend em software mesmo no Mínimo; 3 opções de VU na UI não são lidas pelo núcleo; "Desempenho sustentado" troca a afinidade 7→0; nice −1 não aplicado no modo 7.
+- Medição: pause → Desempenho → Analisar desempenho. Comparar = estado privado + mesma cena, 3 configurações (6 s aquecimento + 20 s), contadores do núcleo a 4 Hz; Sustentado = 1º e último minuto de 10 min. Configurações de teste só como overrides do jogo; blob original restaurado byte a byte (e recuperado na próxima abertura se o app morrer). Nada estimado: sem dado = "Não disponível" (1% lows não existem no núcleo).
+- Página Ajustes → Nexus Performance: estado do sistema, ao vivo, "O que está limitando seu jogo?" (só com evidência), resultados, diagnóstico do log do núcleo.

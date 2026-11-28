@@ -79,6 +79,9 @@ fun SettingsHomeScreen(viewModel: SettingsViewModel = viewModel()) {
             NexusDivider(inset = 74.dp)
             NexusRow(str("nexus.settings.group.diagnostics"), description = str("nexus.settings.diagnostics.desc"),
                 icon = R.drawable.ic_nx_gauge, chevron = true, onClick = { UiNavigator.openFrom(AppRoute.Diagnostics) })
+            NexusDivider(inset = 74.dp)
+            NexusRow("Nexus Performance", description = str("bench.entry.desc"),
+                icon = R.drawable.ic_nx_rocket, chevron = true, onClick = { UiNavigator.openFrom(AppRoute.NexusPerformance) })
 
             NexusSectionHeader(str("nexus.settings.profile"))
             val profile = str(com.armsx2.ui.settings.currentProfileKey(viewModel.settings.value))
