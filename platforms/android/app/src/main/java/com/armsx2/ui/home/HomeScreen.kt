@@ -603,7 +603,7 @@ fun HomeScreen(
                             region = state.regionFilter,
                             regions = state.regions,
                             count = state.visibleGames.size,
-                            sortLabel = str(if (state.sort == HomeSort.RecentlyPlayed) "games.overflow.sortRecent" else "games.overflow.sortTitle"),
+                            sortLabel = str(if (state.sort == HomeSort.RecentlyPlayed) "nexus.lib.sort.recent" else "nexus.lib.sort.title"),
                             onSelect = viewModel::setFilter,
                             onRegion = viewModel::setRegionFilter,
                         )

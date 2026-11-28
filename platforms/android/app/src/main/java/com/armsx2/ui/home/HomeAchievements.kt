@@ -117,7 +117,9 @@ internal fun HomeAchievementsSection(games: List<GameInfo>, forceEn: Boolean) {
         return
     }
 
-    val progress = games.mapNotNull { g -> PlayTime.achievements(g.serial)?.let { g to it } }
+    // Unsupported disc versions have no figures (PlayTime drops them), so they are never listed here.
+    val progress = games.filter { !PlayTime.achievementsUnsupported(it.serial) }
+        .mapNotNull { g -> PlayTime.achievements(g.serial)?.let { g to it } }
         .sortedByDescending { (g, _) -> PlayTime.lastPlayedMillis(g.serial) }
     val unlocked = progress.sumOf { it.second.softcore }
     val total = progress.sumOf { it.second.total }

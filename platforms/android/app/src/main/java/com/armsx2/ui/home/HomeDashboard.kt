@@ -81,7 +81,10 @@ fun HomeDashboard(viewModel: HomeViewModel = viewModel()) {
     // Same trigger as the library, so opening the app on Home still scans the game folders.
     LaunchedEffect(directories, nativeReady) { viewModel.load(directories, nativeReady) }
     // Nexus2: if the app died during "Analisar desempenho", put the game's own settings back.
-    LaunchedEffect(Unit) { com.armsx2.perf.NexusBenchmark.recoverIfInterrupted() }
+    LaunchedEffect(Unit) {
+        com.armsx2.perf.NexusBenchmark.recoverIfInterrupted()
+        com.armsx2.PlayTime.migrateWarningAchievements()
+    }
     // Nexus2: if the app closed on an error last time, show the report once (with Copy).
     LastCrashDialog()
 

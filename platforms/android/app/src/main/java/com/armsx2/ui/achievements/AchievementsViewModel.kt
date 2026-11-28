@@ -110,21 +110,16 @@ class AchievementsViewModel(application: Application) : AndroidViewModel(applica
         // Remember this game's progress while it is loaded — the core only reports achievements for
         // the running VM, so this poll is the only moment the numbers exist. The library reads them
         // back from PlayTime to show progress on games that are not running.
-        if (snapshot != null && snapshot.items.isNotEmpty()) {
-            runCatching {
-                com.armsx2.PlayTime.recordAchievements(
-                    com.armsx2.runtime.MainActivityRuntime.currentGame.value?.serial
-                        ?: NativeApp.getGameSerial(),
-                    // Mask when present, boolean otherwise; a hardcore unlock counts as softcore too.
-                    snapshot.items.count {
-                        if (it.unlockedMask >= 0) it.unlockedMask != 0 else it.unlocked
-                    },
-                    // Guard the unknown case: -1 has every bit set, so a bare mask test would
-                    // report an unearned hardcore unlock for any build that omits the field.
-                    snapshot.items.count { it.unlockedMask > 0 && (it.unlockedMask and 2) != 0 },
-                    snapshot.items.size,
-                )
-            }
+        if (snapshot != null && snapshot.items.isNotEmpty()) runCatching {
+            val real = snapshot.items.filter { it.id < com.armsx2.AchievementsProgress.WARNING_ID }
+            val serial = com.armsx2.runtime.MainActivityRuntime.currentGame.value?.serial ?: NativeApp.getGameSerial()
+            if (real.isEmpty()) com.armsx2.PlayTime.recordUnsupported(serial)
+            else com.armsx2.PlayTime.recordAchievements(
+                serial,
+                real.count { if (it.unlockedMask >= 0) it.unlockedMask != 0 else it.unlocked },
+                real.count { it.unlockedMask > 0 && (it.unlockedMask and 2) != 0 },
+                real.size,
+            )
         }
         if (snapshot != null) state.value = snapshot.copy(
             richPresence = runCatching { NativeApp.getRichPresence() }.getOrDefault(""),

@@ -161,6 +161,14 @@ fun str(key: String): String {
  */
 private val BASE_EN: Map<String, String> = mapOf(
     // --- Nexus2 ---
+    "nexus.ach.unsupported" to "Unsupported version (no reliable data)",
+    "nexus.game.completion" to "Campaign completion",
+    "nexus.game.completion.unverified" to "Not verified",
+    "nexus.game.completion.manual" to "Completed (manual) · {date}",
+    "nexus.game.completion.mark" to "Tap to mark as completed",
+    "nexus.game.completion.unmark" to "Marked by you · tap to undo",
+    "nexus.lib.sort.title" to "title",
+    "nexus.lib.sort.recent" to "recently played",
     "nexus.crash.title" to "The app closed on an error",
     "nexus.crash.copy" to "Copy report",
     "nexus.crash.close" to "Close",
@@ -275,7 +283,7 @@ private val BASE_EN: Map<String, String> = mapOf(
     "nexus.ach.signIn.desc" to "Earn achievements in your PS2 games and track them here.",
     "nexus.ach.unlocked" to "Unlocked",
     "nexus.ach.games" to "Games",
-    "nexus.ach.mastered" to "Completed",
+    "nexus.ach.mastered" to "All achievements",
     "nexus.ach.noProgress" to "Play a game with achievements and its progress shows up here.",
     "nexus.ach.recent" to "Recently unlocked",
     "nexus.ach.recentKey" to "Show recent unlocks",
