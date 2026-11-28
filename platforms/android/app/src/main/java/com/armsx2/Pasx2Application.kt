@@ -67,8 +67,7 @@ class Pasx2Application : Application(), ImageLoaderFactory {
 			val previous = Thread.getDefaultUncaughtExceptionHandler()
 			Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
 				runCatching {
-					File(logDir, "crash-${System.currentTimeMillis()}.txt").writeText(
-						buildString {
+					val report = buildString {
 							appendLine("ARMSX2 crash log")
 							appendLine("time=${System.currentTimeMillis()}")
 							appendLine("thread=${thread.name}")
@@ -86,8 +85,19 @@ class Pasx2Application : Application(), ImageLoaderFactory {
 							appendLine("device=${Build.MANUFACTURER} ${Build.MODEL} / Android ${Build.VERSION.RELEASE}")
 							appendLine("---")
 							appendLine(android.util.Log.getStackTraceString(throwable))
-						},
-					)
+						}
+					File(logDir, "crash-${System.currentTimeMillis()}.txt").writeText(report)
+					// Nexus2: also a copy in Downloads (MediaStore, no permission on Android 10+), so the
+					// report can be opened and shared even when the app closes again right after launch.
+					if (Build.VERSION.SDK_INT >= 29) runCatching {
+						val values = android.content.ContentValues().apply {
+							put(android.provider.MediaStore.Downloads.DISPLAY_NAME, "Nexus2-erro-${System.currentTimeMillis()}.txt")
+							put(android.provider.MediaStore.Downloads.MIME_TYPE, "text/plain")
+						}
+						contentResolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)?.let { uri ->
+							contentResolver.openOutputStream(uri)?.use { it.write(report.toByteArray()) }
+						}
+					}
 				}
 				previous?.uncaughtException(thread, throwable)
 			}
